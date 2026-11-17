@@ -79,5 +79,8 @@ DerivedDataCache/*
 .idea/*
 .idea_backup/*
 
-# RiderLink plugin: each machine installs its own version matching local Rider IDE
-Plugins/Developer/RiderLink/
+# RiderLink plugin sources are COMMITTED on purpose so every teammate gets them.
+# Do NOT ignore Plugins/Developer/RiderLink/ - ignoring it makes the Rider plugin
+# silently vanish from everyone's checkout (this was the cause of "Rider 不工作").
+# Only per-machine build output is ignored, already covered above by
+#   "Plugins/**/Binaries/*"  and  "Plugins/**/Intermediate/*"
