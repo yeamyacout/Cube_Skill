@@ -74,3 +74,10 @@ Plugins/**/Intermediate/*
 
 # Cache files for the editor to use
 DerivedDataCache/*
+
+# IDE local settings (per-machine, do not share)
+.idea/*
+.idea_backup/*
+
+# RiderLink plugin: each machine installs its own version matching local Rider IDE
+Plugins/Developer/RiderLink/
