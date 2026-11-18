@@ -157,3 +157,30 @@ New-Item -ItemType Directory -Force -Path "Plugins\Developer\RiderLink" | Out-Nu
 | `Binaries/`, `Intermediate/` | ❌ | 每台机器各自编译 |
 | `Saved/`, `DerivedDataCache/` | ❌ | 本地缓存与日志 |
 | `.idea/`, `.vs/` | ❌ | 本机 IDE 设置 |
+
+## 内容目录分工
+
+`Content/` 下按**功能**分目录，各人负责自己那块，减少 `.uasset` 冲突：
+
+| 目录 | 负责人 | 内容 |
+| --- | --- | --- |
+| `Content/Animation/` | 动画 | 动画蓝图、动画序列、蒙太奇、混合空间 |
+| `Content/Character/` | 程序 | 角色蓝图 |
+| `Content/Player/` | 程序 | 玩家控制器、输入配置 |
+| `Content/Map/` | — | 关卡 |
+
+### `Content/Animation/` 结构
+
+```
+Content/Animation/
+└── Player/                 ← 玩家动画
+    ├── ABP_Player          ← 动画蓝图
+    └── Locomotion/         ← 按需再建：BS_Locomotion、AS_Walk、AM_Jump ...
+```
+
+**注意**：目前只建了 `Animation/Player/`。子目录（如 `Locomotion/`、`Skill/`）
+等实际有资源时再建，避免过早建空目录——UE 改目录名会触发重定向器，
+多人协作时容易互相干扰。
+
+`Content/Animation/Player/.gitkeep` 仅用于让 Git 保留空目录，
+放下第一个动画资源后即可删除。
