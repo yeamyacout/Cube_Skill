@@ -6,6 +6,10 @@
 #include "CS_BaseCharacter.h"
 #include "CS_EnemyCharacter.generated.h"
 
+class UCS_AbilitySystemComponent;
+class UAbilitySystemComponent;
+class UGameplayAbility;
+
 UCLASS()
 class CUBE_SKILL_API ACS_EnemyCharacter : public ACS_BaseCharacter
 {
@@ -13,8 +17,20 @@ class CUBE_SKILL_API ACS_EnemyCharacter : public ACS_BaseCharacter
 
 public:
 	ACS_EnemyCharacter();
+	
+	UAbilitySystemComponent* GetAbilitySystemComponent() const;
 
 protected:
 	virtual void BeginPlay() override;
 	
+	
+	void GiveStartupAbilities();
+private:
+	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<UCS_AbilitySystemComponent> CS_AbilitySystemComponent;
+
+	UPROPERTY(EditDefaultsOnly,Category = "CS|Abilities")
+	TArray<TSubclassOf<UGameplayAbility>> StartupAbilities;
+	
+
 };
