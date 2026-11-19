@@ -7,6 +7,7 @@
 #include "CS_AbilitySystemComponent.generated.h"
 
 
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class CUBE_SKILL_API UCS_AbilitySystemComponent : public UAbilitySystemComponent
 {
