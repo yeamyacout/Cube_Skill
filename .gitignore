@@ -85,8 +85,8 @@ DerivedDataCache/*
 # Only per-machine build output is ignored, already covered above by
 #   "Plugins/**/Binaries/*"  and  "Plugins/**/Intermediate/*"
 
-# 临时备份目录
-.enemy_backup_*/
-
-# EngineWire MCP 插件（2.6GB，仅本机开发用，不上传）
-Plugins/EngineWire/
+# Local MCP config and agent skills
+.cursor/mcp.json
+**/.cursor/mcp.json
+.agents/
+**/.agents/
