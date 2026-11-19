@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -56,7 +56,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCSOnDeath, AActor*, DamageCauser);
  *   - 死亡后不自动销毁 Actor，由外部监听 OnDeath 自行处理
  *   - 同时兼容 UE 标准的 ApplyDamage（自动绑定 Owner 的 OnTakeAnyDamage）
  */
-UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable)
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent),Blueprintable)
 class CUBE_SKILL_API UCS_HealthComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -248,3 +248,4 @@ private:
 	void HandleOwnerTakeAnyDamage(AActor* DamagedActor, float Damage, const UDamageType* DamageType,
 		AController* InstigatedBy, AActor* DamageCauser);
 };
+
