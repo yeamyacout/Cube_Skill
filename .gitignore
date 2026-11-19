@@ -81,9 +81,12 @@ DerivedDataCache/*
 
 # RiderLink plugin sources are COMMITTED on purpose so every teammate gets them.
 # Do NOT ignore Plugins/Developer/RiderLink/ - ignoring it makes the Rider plugin
-# silently vanish from everyone's checkout (this was the cause of "Rider 涓嶅伐浣?").
+# silently vanish from everyone's checkout (this was the cause of "Rider 不工作").
 # Only per-machine build output is ignored, already covered above by
 #   "Plugins/**/Binaries/*"  and  "Plugins/**/Intermediate/*"
 
-# 本机 MCP 连接指南（含令牌，勿提交）
-Docs/
+# 临时备份目录
+.enemy_backup_*/
+
+# EngineWire MCP 插件（2.6GB，仅本机开发用，不上传）
+Plugins/EngineWire/
