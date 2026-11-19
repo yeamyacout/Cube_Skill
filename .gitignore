@@ -84,3 +84,9 @@ DerivedDataCache/*
 # silently vanish from everyone's checkout (this was the cause of "Rider 不工作").
 # Only per-machine build output is ignored, already covered above by
 #   "Plugins/**/Binaries/*"  and  "Plugins/**/Intermediate/*"
+
+# Local MCP config and agent skills
+.cursor/mcp.json
+**/.cursor/mcp.json
+.agents/
+**/.agents/
