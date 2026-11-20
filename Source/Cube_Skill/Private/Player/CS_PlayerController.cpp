@@ -126,10 +126,13 @@ void ACS_PlayerController::Primary()
 	const FTransform SpawnTransform(CameraRotation, ProjectileSpawnLoc);
 
 	// ---------- 5. 生成并发射立方体 ----------
+	// ProjectileClass 若在蓝图里配了（指向方块蓝图子类），就用子类，
+	// 这样子类细节面板里改的大小的参数会生效；没配则用 C++ 默认类。
 	ACS_CubeProjectile::SpawnAndLaunch(
 		this,
 		SpawnTransform,
 		LaunchDirection,
 		MyCharacter,
-		MyCharacter);
+		MyCharacter,
+		ProjectileClass);
 }
