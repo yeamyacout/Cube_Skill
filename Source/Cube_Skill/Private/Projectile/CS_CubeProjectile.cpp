@@ -171,31 +171,59 @@ void ACS_CubeProjectile::Tick(float DeltaSeconds)
 		// 回收阶段完全自己驱动移动，不依赖 ProjectileMovement。
 		//
 		// 为什么不依赖 ProjectileMovement：
-		//   撞墙时调用过 StopMovementImmediately()，它会把组件停用，
-		//   之后再设置 Velocity 也不会生效（表现为方块原地不动）。
-		//   改用 SetActorLocation 直接位移，简单可靠，且能穿墙飞回玩家身边。
+		//   撞墙时该组件可能被停用，之后再设置 Velocity 无效
+		//   （表现为方块原地不动）。改用 SetActorLocation 直接位移，可靠可控。
 		const FVector TargetLoc = Target->GetActorLocation();
 		const FVector ToTarget = TargetLoc - CurrentLocation;
 		const float Dist3D = ToTarget.Size();
 		const float Dist2D = FVector(ToTarget.X, ToTarget.Y, 0.f).Size();
 
-		// 到位判定：2D 或 3D 距离任一满足都算接住
-		if (Dist2D <= RecallAcceptRadius || Dist3D <= RecallAcceptRadius)
+		// ---------- 到位判定 ----------
+		// 用**水平距离**判断，不用 3D 距离。
+		//   方块被墙挡住时水平方向可能已贴近玩家，但存在高度差
+		//   （比如贴在墙根，玩家站在旁边）。若用 3D 距离判定，
+		//   这种"贴墙卡住"的情况可能永远判定不到，方块会一直卡着。
+		if (Dist2D <= RecallAcceptRadius)
 		{
 			State = ECSProjectileState::Recalled;
 			Destroy();
 			break;
 		}
 
-		// 朝目标直线位移
+		// ---------- 朝玩家方向位移（带扫掠）----------
+		//
+		// 关键：bSweep = true
+		//   SetActorLocation 使用扫掠时，若这一帧位移会撞到墙，
+		//   引擎会把位移"投影"到墙面方向 —— 即沿墙滑动，
+		//   而不是卡死或穿墙。
+		//
+		//   这正好实现需求：
+		//     · 方块被墙挡住，不会穿墙飞到玩家身边
+		//     · 但每帧都重新计算"朝玩家"的方向并尝试移动
+		//     · 玩家移动后，朝玩家的方向变化，方块顺着墙继续滑动
+		//
+		//   即：位移意图始终指向玩家，实际位移受墙体限制。
 		const FVector Dir = ToTarget.GetSafeNormal();
 		if (!Dir.IsNearlyZero())
 		{
 			const float Step = FMath::Min(RecallSpeed * DeltaSeconds, Dist3D);
-			SetActorLocation(CurrentLocation + Dir * Step, /*bSweep=*/false);
+
+			// bSweep = true：撞墙时沿墙滑移，不穿透
+			FHitResult MoveHit;
+			SetActorLocation(CurrentLocation + Dir * Step, /*bSweep=*/true, &MoveHit);
+
+			// 记录是否被挡住（供调试与手感调整）
+			bIsBlockedWhileReturning = MoveHit.bBlockingHit;
+		}
+		else
+		{
+			bIsBlockedWhileReturning = false;
 		}
 
-		// 超时保护
+		// ---------- 超时保护 ----------
+		// 注意：被墙挡住时方块可能长时间到不了玩家，
+		// 所以这个超时不能设得太短，否则玩家还没走到就没了。
+		// 同时它也是最后的安全网：若彻底被隔断，最终仍会回收。
 		RecallElapsed += DeltaSeconds;
 		if (RecallElapsed > RecallMaxDuration)
 		{
@@ -512,11 +540,19 @@ void ACS_CubeProjectile::StartRecall(AActor* TargetActor, float ReturnSpeed)
 		ProjectileMovement->Velocity = Dir * RecallSpeed;
 	}
 
-	// 回收阶段不应该被场景物体挡住回不来：
-	// 对静态/动态物体改为 Overlap（穿过去但不停止），
-	// 仍保持与 Pawn（敌人/玩家）的阻挡，以便继续炸开挡路的敌人。
-	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
-	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+	// ---------- 回收阶段的碰撞设置 ----------
+	//
+	// 必须保持 Block（阻挡），不能改成 Overlap。
+	//   原因：Overlap 只是"检测重叠"，完全不阻挡移动。
+	//         若设为 Overlap，即使 Tick 里用 bSweep=true 也穿过墙去，
+	//         因为扫掠时这些通道根本不算阻挡。
+	//
+	//   保持 Block 后：
+	//     · 方块撞墙会被挡住，不会穿墙
+	//     · 配合 Tick 里的 bSweep=true，方块会沿墙滑动
+	//     · 每帧重算朝玩家方向，玩家移动时方块能顺着墙追过去
+	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 
 	LastFrameLocation = GetActorLocation();
 	RecallElapsed = 0.f;

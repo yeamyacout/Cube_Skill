@@ -255,10 +255,13 @@ protected:
 
 	/**
 	 * 回收过程的最长持续时间（秒）
-	 * 超过这个时间还没接到就强制删除，避免方块被地形卡住后永久滞留
+	 *
+	 * 注意：方块被墙挡住时会一直贴着墙等玩家过来，
+	 * 所以这个值不能太短，否则玩家还没走到方块就消失了。
+	 * 它只是最后的安全网——彻底被隔断（比如隔着厚墙）时才生效。
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.5"))
-	float RecallMaxDuration = 4.f;
+	float RecallMaxDuration = 30.f;
 
 	/** 是否忽略拥有者（避免出生瞬间撞到自己） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Collision")
@@ -291,6 +294,13 @@ protected:
 
 	/** 回收开始后经过的时间（秒），用于超时保护 */
 	float RecallElapsed = 0.f;
+
+	/**
+	 * 回收途中当前是否被墙体挡住（只读，供调试或手感调整）
+	 * 被挡住时方块会沿墙滑动，仍然朝向玩家移动
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
+	bool bIsBlockedWhileReturning = false;
 
 	/**
 	 * 每个敌人上次被炸的时间（秒）
