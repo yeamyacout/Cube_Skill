@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -56,7 +56,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCSOnDeath, AActor*, DamageCauser);
  *   - 死亡后不自动销毁 Actor，由外部监听 OnDeath 自行处理
  *   - 同时兼容 UE 标准的 ApplyDamage（自动绑定 Owner 的 OnTakeAnyDamage）
  */
-UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable)
 class CUBE_SKILL_API UCS_HealthComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -203,7 +203,7 @@ private:
 	 * 这样蓝图能直接连线读取，但无法写入——所有修改必须走 ApplyDamage/Heal/SetHealth，
 	 * 保证事件一定会被广播。
 	 */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Health", meta = (AllowPrivateAccess = "true"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CS|Health", meta = (AllowPrivateAccess = "true"))
 	float CurrentHealth = 100.f;
 
 	/** 是否已死亡（用作死亡逻辑的重入守卫，防止重复广播 OnDeath） */
