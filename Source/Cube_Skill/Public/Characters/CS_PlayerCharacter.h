@@ -8,6 +8,7 @@
 
 class UCameraComponent;
 class USpringArmComponent;
+class UCS_HealthComponent;
 
 UCLASS()
 class CUBE_SKILL_API ACS_PlayerCharacter : public ACS_BaseCharacter
@@ -21,11 +22,15 @@ protected:
 	virtual void BeginPlay() override;
 
 public:
-
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Health")
+	TObjectPtr<UCS_HealthComponent> HealthComponent;
+	
 private:
 	UPROPERTY(VisibleAnywhere , Category = "Camera")
 	TObjectPtr<USpringArmComponent> CameraBoom;
 	
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<UCameraComponent> FollowCamera;
+
+	
 };
