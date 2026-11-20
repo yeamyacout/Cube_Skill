@@ -4,8 +4,16 @@
 #include "Notify/CS_MeleeNotify.h"
 
 #include "Characters/CS_PlayerCharacter.h"
+#include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
+
+void UCS_MeleeNotify::NotifyBegin(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float TotalDuration,
+                                  const FAnimNotifyEventReference& EventReference)
+{
+	Super::NotifyBegin(MeshComp, Animation, TotalDuration, EventReference);
+	AlreadyHit.Reset();
+}
 
 void UCS_MeleeNotify::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float FrameDeltaTime,
                                  const FAnimNotifyEventReference& EventReference)
@@ -21,6 +29,13 @@ void UCS_MeleeNotify::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequence
 	HitResults = PerformSphereTrace(MeshComp);
 
 	SendEventToActor(HitResults , MeshComp);
+}
+
+void UCS_MeleeNotify::NotifyEnd(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
+                                const FAnimNotifyEventReference& EventReference)
+{
+	Super::NotifyEnd(MeshComp, Animation, EventReference);
+	AlreadyHit.Reset();
 }
 
 TArray<FHitResult> UCS_MeleeNotify::PerformSphereTrace(USkeletalMeshComponent* MeshCom)
@@ -51,8 +66,10 @@ void UCS_MeleeNotify::SendEventToActor(TArray<FHitResult> HitResults, USkeletalM
 	for (const FHitResult HitResult : HitResults)
 	{
 		ACS_PlayerCharacter* PlayerCharacter = Cast<ACS_PlayerCharacter>(HitResult.GetActor());
-		if (!IsValid(PlayerCharacter)) continue;
-		//应用伤害
-		UE_LOG(LogTemp,Warning,TEXT("Attack Player Character"));
+		if (!IsValid(PlayerCharacter) || AlreadyHit.Contains(PlayerCharacter)) continue;
+
+		AlreadyHit.Add(PlayerCharacter);
+		AActor* Source = MeshCom->GetOwner();
+		UGameplayStatics::ApplyDamage(PlayerCharacter, Damage, Source ? Source->GetInstigatorController() : nullptr, Source, nullptr);
 	}
 }
