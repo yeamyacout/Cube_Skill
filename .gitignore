@@ -90,3 +90,11 @@ DerivedDataCache/*
 **/.cursor/mcp.json
 .agents/
 **/.agents/
+# EngineWire MCP 插件（2.6GB，仅本机开发用，不上传）
+Plugins/EngineWire/
+
+# 本机配置文档（含 MCP 令牌，勿提交）
+Docs/
+
+# 临时备份目录
+.enemy_backup_*/
