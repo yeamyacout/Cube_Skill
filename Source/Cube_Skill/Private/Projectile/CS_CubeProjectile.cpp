@@ -10,19 +10,26 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/BodyInstance.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
-// 引擎内置立方体网格路径（不依赖项目美术资源）
 #define CS_CUBE_MESH_PATH TEXT("/Engine/BasicShapes/Cube.Cube")
+
+// 回收到达判定频率（秒），约 60fps
+#define CS_RECALL_CHECK_INTERVAL 0.016f
+// 推动敌人频率（秒）
+#define CS_ENEMY_PUSH_INTERVAL 0.033f
 
 
 ACS_CubeProjectile::ACS_CubeProjectile()
 {
-	// 需要每帧：检测超距、检测敌人爆炸、检测回收到位
-	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.bStartWithTickEnabled = true;
+	// 不使用 Tick：碰撞靠事件、检测靠定时器
+	PrimaryActorTick.bCanEverTick = false;
 
 	// ---------- 碰撞球（根组件） ----------
 	CollisionComponent = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionComponent"));
@@ -35,25 +42,10 @@ ACS_CubeProjectile::ACS_CubeProjectile()
 	CollisionComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	CollisionComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 
-	// 关键：对 Pawn（敌人/玩家）完全忽略碰撞。
-	//
-	// 为什么不靠 OnHit 里 IgnoreActorWhenMoving：
-	//   ProjectileMovementComponent 的扫掠移动在世界查询阶段就会检测碰撞，
-	//   等 OnHit 回调触发时，物理已经判定过"被挡住"了，
-	//   此时再忽略该 Actor 也来不及，方块这一帧就已经停住。
-	//   只有在碰撞配置层面直接不响应 Pawn，才能保证方块穿过敌人继续飞。
-	//
-	// 敌人的检测与炸开完全由 Tick 中的 CheckForEnemyExplosion 通过
-	// Overlap 查询完成，不依赖碰撞响应，所以忽略 Pawn 不影响炸开逻辑。
-	CollisionComponent->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
-
-	// 关键：必须开启，否则 OnComponentHit 回调根本不会触发。
-	//   ProjectileMovementComponent 的扫掠会把方块挡在墙外，
-	//   但如果这个开关是关的，我们收不到任何回调，
-	//   就永远不知道"撞墙了"，方块会一直贴着墙卡住。
+	// 不开这个 OnComponentHit 不会触发
 	CollisionComponent->SetNotifyRigidBodyCollision(true);
 
-	// ---------- 立方体网格（视觉） ----------
+	// ---------- 视觉网格 ----------
 	MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
 	MeshComponent->SetupAttachment(CollisionComponent);
 	MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -65,16 +57,25 @@ ACS_CubeProjectile::ACS_CubeProjectile()
 		MeshComponent->SetStaticMesh(CubeMesh.Object);
 	}
 
-	// ---------- 飞行组件 ----------
+	// ---------- 移动组件 ----------
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
 	ProjectileMovement->UpdatedComponent = CollisionComponent;
-	ProjectileMovement->InitialSpeed = InitialSpeed;
-	ProjectileMovement->MaxSpeed = InitialSpeed;
 	ProjectileMovement->bRotationFollowsVelocity = false;
-	ProjectileMovement->bShouldBounce = false;
-	ProjectileMovement->ProjectileGravityScale = GravityScale;
 	ProjectileMovement->bSweepCollision = true;
-	ProjectileMovement->Velocity = FVector(1.f, 0.f, 0.f) * InitialSpeed;
+	ProjectileMovement->bAutoActivate = false;
+	ProjectileMovement->Velocity = FVector::ZeroVector;
+
+	// 速度完全由 Velocity 控制。
+	// InitialSpeed > 0 会让组件用 InitialSpeed 重算速度，覆盖我们设的值。
+	ProjectileMovement->InitialSpeed = 0.f;
+	ProjectileMovement->MaxSpeed = InitialSpeed;
+
+	// 开启 Bounce 但弹性 0：bShouldBounce=false 时碰撞后引擎会 StopSimulating()
+	// 并把 UpdatedComponent 置 NULL，移动组件会彻底失效。
+	ProjectileMovement->bShouldBounce = true;
+	ProjectileMovement->Bounciness = 0.f;
+	ProjectileMovement->Friction = 0.f;
+	ProjectileMovement->ProjectileGravityScale = 0.f;
 }
 
 
@@ -82,383 +83,114 @@ void ACS_CubeProjectile::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 网格缩放：引擎内置 Cube 是 100x100x100
+	// 米 → 厘米
+	MaxTravelDistance = MaxTravelDistanceMeters * 100.f;
+
 	MeshComponent->SetRelativeScale3D(FVector(CubeSize / 100.f));
 
-	// 碰撞球半径略大于立方体半边长
-	CollisionComponent->SetSphereRadius(CubeSize * 0.5f * 1.2f);
+	// 碰撞球放大到 2 倍：高速飞行时擦边也能检测到
+	CollisionComponent->SetSphereRadius(CubeSize * 0.5f * 2.0f);
 
-	ProjectileMovement->InitialSpeed = InitialSpeed;
-	ProjectileMovement->MaxSpeed = InitialSpeed;
+	ProjectileMovement->MaxSpeed = InitialSpeed + 1.f;
 	ProjectileMovement->ProjectileGravityScale = GravityScale;
 
+	// 忽略发射者身上的所有碰撞组件（含胶囊、相机、弹簧臂）
 	if (bIgnoreOwner && GetOwner())
 	{
-		CollisionComponent->IgnoreActorWhenMoving(GetOwner(), true);
+		AActor* OwnerActor = GetOwner();
+		CollisionComponent->IgnoreActorWhenMoving(OwnerActor, true);
+
+		TArray<UPrimitiveComponent*> OwnerPrims;
+		OwnerActor->GetComponents<UPrimitiveComponent>(OwnerPrims);
+		for (UPrimitiveComponent* Comp : OwnerPrims)
+		{
+			if (Comp && Comp != CollisionComponent)
+			{
+				CollisionComponent->IgnoreComponentWhenMoving(Comp, true);
+			}
+		}
+
+		if (APawn* OwnerPawn = Cast<APawn>(OwnerActor))
+		{
+			if (AController* Ctrl = OwnerPawn->GetController())
+			{
+				TArray<UPrimitiveComponent*> CtrlPrims;
+				Ctrl->GetComponents<UPrimitiveComponent>(CtrlPrims);
+				for (UPrimitiveComponent* C : CtrlPrims)
+				{
+					if (C)
+					{
+						CollisionComponent->IgnoreComponentWhenMoving(C, true);
+					}
+				}
+			}
+		}
 	}
 
 	CollisionComponent->OnComponentHit.AddDynamic(this, &ACS_CubeProjectile::OnProjectileHit);
 
-	LastFrameLocation = GetActorLocation();
+	// 出生保护：方块生成时可能与玩家重叠，先忽略碰撞一小段时间
+	bCollisionArmed = (SpawnCollisionGraceTime <= 0.f);
+	if (!bCollisionArmed)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				SpawnGraceTimerHandle, this,
+				&ACS_CubeProjectile::ArmCollision,
+				SpawnCollisionGraceTime, false);
+		}
+		else
+		{
+			bCollisionArmed = true;
+		}
+	}
 
-	// 如果 LaunchInDirection 在 BeginPlay 之前被调用过（SpawnAndLaunch 的常见时序），
-	// 这里再应用一次速度，确保它在组件完全初始化后依然正确。
 	if (bHasPendingLaunch)
 	{
 		ApplyLaunchVelocity();
 	}
-
-	// 刻意不调用 SetLifeSpan：方块存在到被回收为止
 }
 
 
-void ACS_CubeProjectile::Tick(float DeltaSeconds)
+void ACS_CubeProjectile::ArmCollision()
 {
-	Super::Tick(DeltaSeconds);
-
-	const FVector CurrentLocation = GetActorLocation();
-	switch (State)
-	{
-	case ECSProjectileState::Flying:
-	{
-		// 1) 累计飞行距离，超过上限自动回收
-		TraveledDistance += FVector::Dist(CurrentLocation, LastFrameLocation);
-
-		// 2) 兜底检测：如果方块这一帧几乎没动，说明被挡住了（撞墙/撞地）。
-		const float FrameDist = FVector::Dist(CurrentLocation, LastFrameLocation);
-
-		// 起飞宽限期：方块刚生成时可能与地面/角色碰撞体重叠，
-		// 前几帧位移很小属正常，不能立刻判定为卡住。
-		if (StuckGraceTime > 0.f)
-		{
-			StuckGraceTime -= DeltaSeconds;
-			LastFrameLocation = CurrentLocation;
-			TraveledDistance += FrameDist;
-			CheckForEnemyExplosion(DeltaSeconds);
-			break;
-		}
-
-		// 正常飞行每帧至少移动 Speed*DeltaTime（2000cm/s * 0.016 ≈ 32cm），
-		// 如果一帧位移小于 2cm，就是被卡住了。
-		const bool bStuck = (TraveledDistance > 5.f) && (FrameDist < 2.f);
-
-		LastFrameLocation = CurrentLocation;
-
-		// 撞墙或超距 -> 自动回收
-		if (bStuck || TraveledDistance >= MaxTravelDistance)
-		{
-			// 注意：这里不再调用 StopMovementImmediately。
-			// 原因：它会停用 ProjectileMovement 组件，导致后续回收移动失效。
-			// 回收阶段本来就由 Tick 自己驱动位移，不依赖该组件。
-			StartRecall(GetOwner());
-			break;
-		}
-
-		// 3) 检测周围敌人并炸开（兜底，与 Hit 回调互为补充）
-		CheckForEnemyExplosion(DeltaSeconds);
-		break;
-	}
-
-	case ECSProjectileState::Returning:
-	{
-		AActor* Target = RecallTarget.Get();
-		if (!Target)
-		{
-			Destroy();
-			break;
-		}
-
-		// 回收阶段完全自己驱动移动，不依赖 ProjectileMovement。
-		//
-		// 为什么不依赖 ProjectileMovement：
-		//   撞墙时该组件可能被停用，之后再设置 Velocity 无效
-		//   （表现为方块原地不动）。改用 SetActorLocation 直接位移，可靠可控。
-		const FVector TargetLoc = Target->GetActorLocation();
-		const FVector ToTarget = TargetLoc - CurrentLocation;
-		const float Dist3D = ToTarget.Size();
-		const float Dist2D = FVector(ToTarget.X, ToTarget.Y, 0.f).Size();
-
-		// ---------- 到位判定 ----------
-		// 用**水平距离**判断，不用 3D 距离。
-		//   方块被墙挡住时水平方向可能已贴近玩家，但存在高度差
-		//   （比如贴在墙根，玩家站在旁边）。若用 3D 距离判定，
-		//   这种"贴墙卡住"的情况可能永远判定不到，方块会一直卡着。
-		if (Dist2D <= RecallAcceptRadius)
-		{
-			State = ECSProjectileState::Recalled;
-			Destroy();
-			break;
-		}
-
-		// ---------- 朝玩家方向位移（带扫掠）----------
-		//
-		// 关键：bSweep = true
-		//   SetActorLocation 使用扫掠时，若这一帧位移会撞到墙，
-		//   引擎会把位移"投影"到墙面方向 —— 即沿墙滑动，
-		//   而不是卡死或穿墙。
-		//
-		//   这正好实现需求：
-		//     · 方块被墙挡住，不会穿墙飞到玩家身边
-		//     · 但每帧都重新计算"朝玩家"的方向并尝试移动
-		//     · 玩家移动后，朝玩家的方向变化，方块顺着墙继续滑动
-		//
-		//   即：位移意图始终指向玩家，实际位移受墙体限制。
-		const FVector Dir = ToTarget.GetSafeNormal();
-		if (!Dir.IsNearlyZero())
-		{
-			const float Step = FMath::Min(RecallSpeed * DeltaSeconds, Dist3D);
-
-			// bSweep = true：撞墙时沿墙滑移，不穿透
-			FHitResult MoveHit;
-			SetActorLocation(CurrentLocation + Dir * Step, /*bSweep=*/true, &MoveHit);
-
-			// 记录是否被挡住（供调试与手感调整）
-			bIsBlockedWhileReturning = MoveHit.bBlockingHit;
-		}
-		else
-		{
-			bIsBlockedWhileReturning = false;
-		}
-
-		// ---------- 超时保护 ----------
-		// 注意：被墙挡住时方块可能长时间到不了玩家，
-		// 所以这个超时不能设得太短，否则玩家还没走到就没了。
-		// 同时它也是最后的安全网：若彻底被隔断，最终仍会回收。
-		RecallElapsed += DeltaSeconds;
-		if (RecallElapsed > RecallMaxDuration)
-		{
-			State = ECSProjectileState::Recalled;
-			Destroy();
-			break;
-		}
-
-		// 回收途中仍然炸开挡路的敌人
-		CheckForEnemyExplosion(DeltaSeconds);
-
-		LastFrameLocation = GetActorLocation();
-		break;
-	}
-
-	default:
-		break;
-	}
-}
-
-
-void ACS_CubeProjectile::CheckForEnemyExplosion(float DeltaSeconds)
-{
-	if (!GetWorld())
-	{
-		return;
-	}
-
-	// 用碰撞球自身的半径 + 一个较小的容差来检测接触。
-	//
-	// 容差为什么不能太小：
-	//   方块飞行速度 2000 cm/s，60fps 下每帧移动约 33cm，
-	//   如果检测半径刚好等于方块半径，高速飞行时可能"跨过"敌人检测不到。
-	//   这里多加 60cm 容差，配合"一帧最多跨 33cm"能保证不漏检。
-	//
-	// 注意：检测半径不影响爆炸半径（ExplosionRadius 单独控制），
-	//       检测只是"什么时候引爆"，爆炸范围由 ExplosionRadius 决定。
-	const FVector Center = GetActorLocation();
-	const float QueryRadius = CubeSize * 0.5f + 60.f;
-
-	TArray<FOverlapResult> Overlaps;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(CS_BlastProbe), false, this);
-	Params.AddIgnoredActor(this);
-	if (bIgnoreOwner && GetOwner())
-	{
-		Params.AddIgnoredActor(GetOwner());
-	}
-
-	const bool bFound = GetWorld()->OverlapMultiByObjectType(
-		Overlaps,
-		Center,
-		FQuat::Identity,
-		FCollisionObjectQueryParams(ECC_Pawn),
-		FCollisionShape::MakeSphere(QueryRadius),
-		Params);
-
-	if (!bFound)
-	{
-		return;
-	}
-
-	// 只要检测到有敌人接触，就触发一次以方块为中心的爆炸
-	bool bAnyEnemy = false;
-	for (const FOverlapResult& Overlap : Overlaps)
-	{
-		if (IsEnemyActor(Overlap.GetActor()))
-		{
-			bAnyEnemy = true;
-			break;
-		}
-	}
-
-	if (bAnyEnemy)
-	{
-		ExplodeAt(Center, ExplosionRadius);
-	}
-}
-
-
-void ACS_CubeProjectile::ExplodeAt(const FVector& Epicenter, float Radius)
-{
-	if (!GetWorld())
-	{
-		return;
-	}
-
-	const float UseRadius = (Radius > 0.f) ? Radius : ExplosionRadius;
-	const float Now = GetWorld()->GetTimeSeconds();
-
-	// 查询半径内的所有 Pawn
-	TArray<FOverlapResult> Overlaps;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(CS_Explosion), false, this);
-	Params.AddIgnoredActor(this);
-	if (bIgnoreOwner && GetOwner())
-	{
-		Params.AddIgnoredActor(GetOwner());
-	}
-
-	const bool bFound = GetWorld()->OverlapMultiByObjectType(
-		Overlaps,
-		Epicenter,
-		FQuat::Identity,
-		FCollisionObjectQueryParams(ECC_Pawn),
-		FCollisionShape::MakeSphere(UseRadius),
-		Params);
-
-	if (!bFound)
-	{
-		return;
-	}
-
-	// 去重：同一个敌人可能有多个体积
-	TSet<ACS_EnemyCharacter*> Processed;
-
-	for (const FOverlapResult& Overlap : Overlaps)
-	{
-		AActor* Other = Overlap.GetActor();
-		if (!IsEnemyActor(Other))
-		{
-			continue;
-		}
-
-		ACS_EnemyCharacter* Enemy = Cast<ACS_EnemyCharacter>(Other);
-		if (!Enemy || Processed.Contains(Enemy))
-		{
-			continue;
-		}
-		Processed.Add(Enemy);
-
-		// 冷却检查：同一个敌人短时间内不重复炸，避免速度失控
-		TWeakObjectPtr<ACS_EnemyCharacter> Key(Enemy);
-		if (const float* LastTime = LastBlastTimeMap.Find(Key))
-		{
-			if (Now - *LastTime < BlastCooldown)
-			{
-				continue;
-			}
-		}
-		LastBlastTimeMap.Add(Key, Now);
-
-		// 距离越近，冲量越强（线性衰减）
-		const float Dist = FVector::Dist(Epicenter, Enemy->GetActorLocation());
-		const float Strength = FMath::Clamp(1.f - (Dist / UseRadius), 0.35f, 1.f);
-
-		BlastEnemy(Enemy, Epicenter, Strength);
-	}
-
-	// 定期清理已销毁敌人的记录，避免 Map 无限增长
-	if (LastBlastTimeMap.Num() > 32)
-	{
-		for (auto It = LastBlastTimeMap.CreateIterator(); It; ++It)
-		{
-			if (!It.Key().IsValid())
-			{
-				It.RemoveCurrent();
-			}
-		}
-	}
-}
-
-
-void ACS_CubeProjectile::BlastEnemy(ACS_EnemyCharacter* Enemy, const FVector& Epicenter, float Strength)
-{
-	if (!Enemy)
-	{
-		return;
-	}
-
-	// ---------- 第一步：先锁住敌人的移动 ----------
-	// 必须在施加弹飞速度之前做，否则 AI 的移动输入会和弹飞速度打架，
-	// 表现为"一边被弹上天，一边还在往玩家方向走"。
-	// StartKnockback 会：
-	//   - 停止 AI 寻路
-	//   - 忽略后续所有移动输入
-	//   - 在落地时自动恢复
-	Enemy->StartKnockback(KnockbackLockDuration);
-
-	// ---------- 第二步：计算弹开方向 ----------
-	// 方向 = 从爆炸中心指向敌人（即"从方块向外炸开"）
-	FVector Dir = Enemy->GetActorLocation() - Epicenter;
-
-	// 只取水平面，垂直方向单独处理，避免敌人被炸到地底或飞得歪歪扭扭
-	FVector HorizontalDir = FVector(Dir.X, Dir.Y, 0.f).GetSafeNormal();
-
-	// 极端情况：敌人正好在爆炸中心，水平方向为零 -> 给一个随机方向
-	if (HorizontalDir.IsNearlyZero())
-	{
-		const float RandomAngle = FMath::FRandRange(0.f, 2.f * PI);
-		HorizontalDir = FVector(FMath::Cos(RandomAngle), FMath::Sin(RandomAngle), 0.f);
-	}
-
-	// ---------- 第三步：组合出抛射速度 ----------
-	// 水平分量 + 向上分量，形成抛物线弹飞
-	const float HorizontalSpeed = BlastImpulse * Strength;
-	const float VerticalSpeed = BlastImpulse * Strength * BlastUpwardRatio;
-
-	FVector LaunchVelocity = HorizontalDir * HorizontalSpeed;
-	LaunchVelocity.Z = VerticalSpeed;
-
-	// ---------- 第四步：施加弹开 ----------
-	// LaunchCharacter 会把角色设为"空中"状态并正确应用速度，
-	// 手感最接近"被炸飞"。
-	Enemy->LaunchCharacter(LaunchVelocity, /*bXYOverride=*/true, /*bZOverride=*/true);
-}
-
-
-bool ACS_CubeProjectile::IsEnemyActor(const AActor* Actor)
-{
-	// 项目里所有敌人都是 ACS_EnemyCharacter 的子类。
-	// 用基类判断，以后新增的敌人类都自动生效。
-	return Actor && Actor->IsA<ACS_EnemyCharacter>();
+	bCollisionArmed = true;
 }
 
 
 void ACS_CubeProjectile::LaunchInDirection(const FVector& Direction)
 {
-	if (!ProjectileMovement || Direction.IsNearlyZero())
+	if (Direction.IsNearlyZero())
 	{
 		return;
 	}
 
-	const FVector NormalizedDir = Direction.GetSafeNormal();
-
-	// 记录期望的速度，BeginPlay 里还会再应用一次。
-	// 原因：SpawnAndLaunch 会在 SpawnActor 后立刻调用本函数，
-	//       此时 BeginPlay 可能还没执行完，部分组件参数尚未初始化。
-	//       通过在 BeginPlay 里复用 PendingLaunchDirection，可以保证
-	//       无论调用时序如何，速度一定被正确设置。
-	PendingLaunchDirection = NormalizedDir;
+	PendingLaunchDirection = Direction.GetSafeNormal();
 	bHasPendingLaunch = true;
-
-	// 立刻应用一次（正常时序下 BeginPlay 已执行，这里直接生效）
 	ApplyLaunchVelocity();
+}
 
-	SetState(ECSProjectileState::Flying);
+
+void ACS_CubeProjectile::RestartMovement(const FVector& NewVelocity)
+{
+	if (!ProjectileMovement)
+	{
+		return;
+	}
+
+	// InitialSpeed 必须为 0，否则组件会用重算速度覆盖我们设的值
+	ProjectileMovement->InitialSpeed = 0.f;
+
+	// 重绑 UpdatedComponent：碰撞后它会被置 NULL，不重绑就动不了
+	ProjectileMovement->SetUpdatedComponent(CollisionComponent);
+	ProjectileMovement->bSimulationEnabled = true;
+	ProjectileMovement->SetComponentTickEnabled(true);
+	ProjectileMovement->Activate(true);
+
+	ProjectileMovement->Velocity = NewVelocity;
+	ProjectileMovement->UpdateComponentVelocity();
+	ProjectileMovement->Velocity = NewVelocity;
 }
 
 
@@ -469,56 +201,544 @@ void ACS_CubeProjectile::ApplyLaunchVelocity()
 		return;
 	}
 
-	// 速度 = 方向 * 初速。使用 FVector 计算，避免被当成 2D 向量。
+	bSwitchedToPhysics = false;
+	AlreadyHitEnemies.Reset();
+
 	const FVector LaunchVel = PendingLaunchDirection * InitialSpeed;
 
-	// 先设置 MaxSpeed 再设置 Velocity，顺序很重要：
-	// ProjectileMovementComponent 会在 Tick 里把 Velocity 钳制到 MaxSpeed，
-	// 如果 MaxSpeed 还是旧值（比如 0），速度会被清掉。
-	ProjectileMovement->InitialSpeed = InitialSpeed;
 	ProjectileMovement->MaxSpeed = InitialSpeed + 1.f;
 	ProjectileMovement->ProjectileGravityScale = GravityScale;
 
-	ProjectileMovement->Activate(true);
-	ProjectileMovement->SetUpdatedComponent(CollisionComponent);
-	ProjectileMovement->Velocity = LaunchVel;
+	RestartMovement(LaunchVel);
 
-	// 重置飞行距离统计
-	TraveledDistance = 0.f;
-	LastFrameLocation = GetActorLocation();
+	bIsFlying = true;
+	bHasCollided = false;
+	bIsReturning = false;
+	SetState(ECSProjectileState::Flying);
 
-	// 重要：刚生成时可能因为与地面/自身重叠而被判定为"卡住"，
-	// 这里给一个短暂的宽限期，避免起飞瞬间就被误判回收。
-	StuckGraceTime = 0.25f;
+	LaunchOrigin = GetActorLocation();
+	bLaunchOriginValid = true;
+	LaunchStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// 距离检测（低频）
+	World->GetTimerManager().SetTimer(
+		DistanceCheckTimerHandle, this,
+		&ACS_CubeProjectile::CheckTravelDistance,
+		DistanceCheckInterval, true);
+
+	// 敌人范围检测（球形 Overlap，不依赖物理碰撞）
+	World->GetTimerManager().SetTimer(
+		EnemyDetectTimerHandle, this,
+		&ACS_CubeProjectile::CheckNearbyEnemies,
+		EnemyDetectInterval, true);
+
+	// 立刻检测一次：贴脸发射时方块一出生就在敌人旁边
+	CheckNearbyEnemies();
 }
 
 
-void ACS_CubeProjectile::StartRecall(AActor* TargetActor, float ReturnSpeed)
+void ACS_CubeProjectile::CheckNearbyEnemies()
 {
-	if (!ProjectileMovement)
+	if (bIsReturning || State == ECSProjectileState::Recalled)
 	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+		}
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FVector Center = GetActorLocation();
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(CS_EnemyDetect), false, this);
+	if (GetOwner())
+	{
+		QueryParams.AddIgnoredActor(GetOwner());
+	}
+
+	TArray<FOverlapResult> Overlaps;
+	const FCollisionShape Shape = FCollisionShape::MakeSphere(EnemyDetectRadius);
+
+	const bool bFound = World->OverlapMultiByObjectType(
+		Overlaps, Center, FQuat::Identity,
+		FCollisionObjectQueryParams(ECC_Pawn),
+		Shape, QueryParams);
+
+	if (!bFound)
+	{
+		return;
+	}
+
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		ACS_EnemyCharacter* Enemy = Cast<ACS_EnemyCharacter>(Overlap.GetActor());
+		if (!Enemy || AlreadyHitEnemies.Contains(Enemy))
+		{
+			continue;
+		}
+
+		// 推力方向 = 方块飞行方向
+		FVector PushDir = ProjectileMovement
+			? ProjectileMovement->Velocity.GetSafeNormal()
+			: PendingLaunchDirection;
+		if (PushDir.IsNearlyZero())
+		{
+			PushDir = PendingLaunchDirection;
+		}
+
+		AlreadyHitEnemies.Add(Enemy);
+		ProcessEnemyHit(Enemy, PushDir);
+		break;
+	}
+}
+
+
+void ACS_CubeProjectile::CheckTravelDistance()
+{
+	if (bIsReturning || State == ECSProjectileState::Recalled)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
+		}
+		return;
+	}
+
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
+		}
+		SetState(ECSProjectileState::Recalled);
 		Destroy();
 		return;
 	}
 
-	// 已在回收或已完成则不重复处理
-	if (State == ECSProjectileState::Returning || State == ECSProjectileState::Recalled)
+	const float DistToOwner = FVector::Dist(GetActorLocation(), OwnerActor->GetActorLocation());
+
+	// 超距回收（无论是否碰撞过、是否已转物理，都要生效）
+	if (DistToOwner >= MaxTravelDistance)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
+			World->GetTimerManager().ClearTimer(RecallDelayTimerHandle);
+		}
+		StartRecall();
+		return;
+	}
+
+	// 卡死兜底：贴墙/贴地/墙角时方块可能嵌在障碍里，碰撞检测不到，
+	// 若离玩家很近且几乎不动，判定卡死直接回收。
+	if (!bHasCollided && !bSwitchedToPhysics)
+	{
+		const float Speed = ProjectileMovement ? ProjectileMovement->Velocity.Size() : 0.f;
+
+		if (DistToOwner <= StuckTeleportRecoverDistance && Speed <= StuckSpeedThreshold)
+		{
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
+				World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+				World->GetTimerManager().ClearTimer(RecallDelayTimerHandle);
+			}
+
+			SetState(ECSProjectileState::Recalled);
+			Destroy();
+		}
+	}
+}
+
+
+void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVector& PushDir)
+{
+	if (!Enemy)
 	{
 		return;
 	}
 
-	// 没指定目标时回退到 Owner（即发射方块的人）
-	if (!TargetActor)
+	// 推力方向严格投影到水平面，敌人只沿此方向后退
+	LockedPushDirection = FVector(PushDir.X, PushDir.Y, 0.f).GetSafeNormal();
+
+	if (!LockedPushDirection.IsNearlyZero())
 	{
-		TargetActor = GetOwner();
+		if (bIsPushingEnemy)
+		{
+			StopEnemyPush();
+		}
+
+		if (UCharacterMovementComponent* EnemyMove = Enemy->GetCharacterMovement())
+		{
+			SavedEnemyMaxWalkSpeed = EnemyMove->MaxWalkSpeed;
+			SavedEnemyBrakingDeceleration = EnemyMove->BrakingDecelerationWalking;
+		}
+
+		// 锁 AI，不要求落地解除（水平推时敌人全程贴地）
+		Enemy->StartKnockback(EnemyKnockbackLockTime, /*bRequireLandingToEnd=*/false);
+
+		bIsPushingEnemy = true;
+		PushedEnemy = Enemy;
+
+		CollisionComponent->IgnoreActorWhenMoving(Enemy, true);
+
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				PushTimerHandle, this,
+				&ACS_CubeProjectile::ApplyEnemyPush,
+				CS_ENEMY_PUSH_INTERVAL, true);
+
+			ApplyEnemyPush();
+
+			World->GetTimerManager().SetTimer(
+				PushStopTimerHandle,
+				FTimerDelegate::CreateWeakLambda(this, [this]() { StopEnemyPush(); }),
+				EnemyPushDuration, false);
+		}
 	}
 
-	RecallTarget = TargetActor;
-
-	// 没有可回收的目标（比如发射者已销毁），直接删除
-	if (!TargetActor)
+	// 方块转刚体：弹开 + 翻滚
+	if (bEnablePhysicsOnImpact)
 	{
-		State = ECSProjectileState::Recalled;
+		// 先从敌人身体里挪出来，避免两者互相挤压
+		const FVector AwayFromEnemy =
+			(GetActorLocation() - Enemy->GetActorLocation()).GetSafeNormal();
+		if (!AwayFromEnemy.IsNearlyZero())
+		{
+			SetActorLocation(GetActorLocation() + AwayFromEnemy * 30.f, false);
+		}
+
+		// 法线取飞行方向反方向，方块沿原路弹回
+		FHitResult SimulatedHit;
+		SimulatedHit.ImpactNormal = -LockedPushDirection;
+		SimulatedHit.Location = GetActorLocation();
+
+		SwitchToPhysicsOnImpact(SimulatedHit, /*bIsEnemyImpact=*/true);
+	}
+	else if (ProjectileMovement)
+	{
+		ProjectileMovement->Velocity = FVector::ZeroVector;
+		ProjectileMovement->UpdateComponentVelocity();
+	}
+
+	// 延迟回收
+	if (!bHasCollided && !bIsReturning)
+	{
+		bHasCollided = true;
+		bIsFlying = false;
+		SetState(ECSProjectileState::Blocked);
+
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				RecallDelayTimerHandle, this,
+				&ACS_CubeProjectile::HandleRecallDelayFinished,
+				EnemyHitRecallDelay, false);
+		}
+		else
+		{
+			HandleRecallDelayFinished();
+		}
+	}
+	else if (bIsReturning)
+	{
+		// 已经在回收途中又撞到敌人（例如超距回收时飞行中撞上）：
+		// 此时 bIsReturning 已为 true，上面的延迟回收不会执行，
+		// 而方块刚被转成物理模式（移动组件已停），会卡在原地再也飞不回来。
+		//
+		// 处理：先标记碰撞，再重置回收流程 —— 取消当前回收、等待片刻重新开始。
+		bHasCollided = true;
+		bIsFlying = false;
+
+		if (UWorld* World = GetWorld())
+		{
+			// 停掉旧的回收推进
+			World->GetTimerManager().ClearTimer(RecallCheckTimerHandle);
+
+			// 重置回收状态，让下一次 StartRecall 能正常启动
+			bIsReturning = false;
+			State = ECSProjectileState::Blocked;
+
+			World->GetTimerManager().SetTimer(
+				RecallDelayTimerHandle, this,
+				&ACS_CubeProjectile::HandleRecallDelayFinished,
+				EnemyHitRecallDelay, false);
+		}
+		else
+		{
+			bIsReturning = false;
+			HandleRecallDelayFinished();
+		}
+	}
+}
+
+
+void ACS_CubeProjectile::HitEnemyImmediately(ACS_EnemyCharacter* Enemy, const FVector& Direction)
+{
+	ProcessEnemyHit(Enemy, Direction);
+}
+
+
+void ACS_CubeProjectile::ApplyEnemyPush()
+{
+	ACS_EnemyCharacter* Enemy = PushedEnemy.Get();
+	if (!Enemy)
+	{
+		StopEnemyPush();
+		return;
+	}
+
+	// 通过敌人的接口，让它在自己的 Tick 里每帧压速度
+	Enemy->SetKnockbackVelocityOverride(LockedPushDirection * EnemyPushSpeed, true);
+}
+
+
+void ACS_CubeProjectile::StopEnemyPush()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PushTimerHandle);
+		World->GetTimerManager().ClearTimer(PushStopTimerHandle);
+	}
+
+	if (ACS_EnemyCharacter* Enemy = PushedEnemy.Get())
+	{
+		Enemy->SetKnockbackVelocityOverride(FVector::ZeroVector, false);
+
+		if (UCharacterMovementComponent* MoveComp = Enemy->GetCharacterMovement())
+		{
+			MoveComp->MaxWalkSpeed = SavedEnemyMaxWalkSpeed;
+			MoveComp->BrakingDecelerationWalking = SavedEnemyBrakingDeceleration;
+		}
+	}
+
+	bIsPushingEnemy = false;
+	PushedEnemy = nullptr;
+}
+
+
+void ACS_CubeProjectile::OnProjectileHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimitiveComponent* OtherComp,
+	FVector NormalImpulse, const FHitResult& Hit)
+{
+	// 出生保护期内忽略
+	if (!bCollisionArmed)
+	{
+		return;
+	}
+
+	if (!OtherActor || OtherActor == this)
+	{
+		return;
+	}
+
+	// 撞到拥有者：正常忽略；但若已转物理并弹回来撞到玩家，说明碰撞流程走完，需开始回收。
+	if (bIgnoreOwner && OtherActor == GetOwner())
+	{
+		if (bSwitchedToPhysics && !bHasCollided)
+		{
+			bHasCollided = true;
+			bIsFlying = false;
+			SetState(ECSProjectileState::Blocked);
+
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().SetTimer(
+					RecallDelayTimerHandle, this,
+					&ACS_CubeProjectile::HandleRecallDelayFinished,
+					RecallDelayAfterHit, false);
+			}
+			else
+			{
+				HandleRecallDelayFinished();
+			}
+		}
+		return;
+	}
+
+	// 撞到敌人：交给 ProcessEnemyHit（Overlap 检测已覆盖，这里兜底）
+	if (IsEnemyActor(OtherActor))
+	{
+		if (ACS_EnemyCharacter* Enemy = Cast<ACS_EnemyCharacter>(OtherActor))
+		{
+			if (!AlreadyHitEnemies.Contains(Enemy))
+			{
+				FVector PushDir = ProjectileMovement
+					? ProjectileMovement->Velocity.GetSafeNormal()
+					: PendingLaunchDirection;
+				if (PushDir.IsNearlyZero())
+				{
+					PushDir = PendingLaunchDirection;
+				}
+
+				AlreadyHitEnemies.Add(Enemy);
+				ProcessEnemyHit(Enemy, PushDir);
+			}
+		}
+		return;
+	}
+
+	// 撞到墙/地面/道具
+	if (bHasCollided || bIsReturning)
+	{
+		return;
+	}
+
+	bHasCollided = true;
+	bIsFlying = false;
+
+	// 转刚体（必须先停移动组件，再开物理）
+	if (bEnablePhysicsOnImpact)
+	{
+		SwitchToPhysicsOnImpact(Hit);
+	}
+	else if (ProjectileMovement)
+	{
+		ProjectileMovement->Velocity = FVector::ZeroVector;
+		ProjectileMovement->UpdateComponentVelocity();
+	}
+
+	SetState(ECSProjectileState::Blocked);
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			RecallDelayTimerHandle, this,
+			&ACS_CubeProjectile::HandleRecallDelayFinished,
+			RecallDelayAfterHit, false);
+	}
+	else
+	{
+		HandleRecallDelayFinished();
+	}
+}
+
+
+void ACS_CubeProjectile::SwitchToPhysicsOnImpact(const FHitResult& Hit, bool bIsEnemyImpact)
+{
+	if (!CollisionComponent)
+	{
+		return;
+	}
+
+	const FVector ImpactVelocity = ProjectileMovement ? ProjectileMovement->Velocity : FVector::ZeroVector;
+	const float ImpactSpeed = ImpactVelocity.Size();
+
+	// 第 1 步：停掉并解绑移动组件（必须先做，否则和物理打架）
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Deactivate();
+		ProjectileMovement->SetComponentTickEnabled(false);
+		ProjectileMovement->bSimulationEnabled = false;
+		ProjectileMovement->SetUpdatedComponent(nullptr);
+	}
+
+	// 第 2 步：开启刚体
+	CollisionComponent->SetSimulatePhysics(true);
+	CollisionComponent->SetMassOverrideInKg(NAME_None, ImpactPhysicsMass, true);
+	CollisionComponent->SetLinearDamping(ImpactLinearDamping);
+	CollisionComponent->SetAngularDamping(ImpactAngularDamping);
+	CollisionComponent->SetEnableGravity(true);
+
+	// 第 3 步：反弹系数（若没有物理材质则跳过，默认行为仍然可用）
+	if (UPhysicalMaterial* PhysMat = CollisionComponent->BodyInstance.GetSimplePhysicalMaterial())
+	{
+		PhysMat->Restitution = ImpactRestitution;
+	}
+
+	// 第 4 步：按法线反弹 V' = -V - 2(-V·N)N
+	if (ImpactSpeed > 1.f && !Hit.ImpactNormal.IsNearlyZero())
+	{
+		const FVector N = Hit.ImpactNormal.GetSafeNormal();
+		const FVector Reflected = -ImpactVelocity - 2.f * FVector::DotProduct(-ImpactVelocity, N) * N;
+		CollisionComponent->SetPhysicsLinearVelocity(Reflected * ImpactRestitution);
+	}
+
+	// 第 5 步：随机旋转，让方块翻滚
+	// 撞墙与撞敌人分别由蓝图开关控制是否旋转，以及翻转力度
+	const bool bAllowRotation = bIsEnemyImpact ? bEnableRotationOnEnemyImpact : bEnableRotationOnSurfaceImpact;
+	const float AngularAmount = bIsEnemyImpact ? EnemyImpactAngularImpulse : SurfaceImpactAngularImpulse;
+
+	if (bAllowRotation && AngularAmount > 0.f)
+	{
+		CollisionComponent->AddAngularImpulseInDegrees(
+			FMath::VRand() * AngularAmount, NAME_None, /*bVelChange=*/true);
+	}
+
+	bSwitchedToPhysics = true;
+}
+
+
+void ACS_CubeProjectile::RestoreFromPhysics()
+{
+	if (!bSwitchedToPhysics)
+	{
+		return;
+	}
+
+	if (CollisionComponent)
+	{
+		CollisionComponent->SetSimulatePhysics(false);
+		CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->bSimulationEnabled = true;
+		ProjectileMovement->SetComponentTickEnabled(true);
+		ProjectileMovement->SetUpdatedComponent(CollisionComponent);
+		ProjectileMovement->Activate(true);
+	}
+
+	bSwitchedToPhysics = false;
+}
+
+
+void ACS_CubeProjectile::HandleRecallDelayFinished()
+{
+	StartRecall();
+}
+
+
+void ACS_CubeProjectile::StartRecall(float ReturnSpeed)
+{
+	if (bIsReturning || State == ECSProjectileState::Recalled)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(RecallDelayTimerHandle);
+		World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
+		World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+	}
+
+	StopEnemyPush();
+
+	// 刚体模式切回移动组件（回收要用 Homing）
+	RestoreFromPhysics();
+
+	AActor* Target = GetOwner();
+	RecallTarget = Target;
+
+	if (!Target)
+	{
+		SetState(ECSProjectileState::Recalled);
 		Destroy();
 		return;
 	}
@@ -528,42 +748,125 @@ void ACS_CubeProjectile::StartRecall(AActor* TargetActor, float ReturnSpeed)
 		RecallSpeed = ReturnSpeed;
 	}
 
-	// 回收时关闭重力，保证能准确飞回来
-	ProjectileMovement->ProjectileGravityScale = 0.f;
-	ProjectileMovement->Activate(true);
-	ProjectileMovement->SetUpdatedComponent(CollisionComponent);
+	bIsReturning = true;
+	bIsFlying = false;
 
-	// 给一个朝目标的初始速度
-	const FVector Dir = (TargetActor->GetActorLocation() - GetActorLocation()).GetSafeNormal();
-	if (!Dir.IsNearlyZero())
+	if (!ProjectileMovement)
 	{
-		ProjectileMovement->Velocity = Dir * RecallSpeed;
+		SetState(ECSProjectileState::Recalled);
+		Destroy();
+		return;
 	}
 
-	// ---------- 回收阶段的碰撞设置 ----------
-	//
-	// 必须保持 Block（阻挡），不能改成 Overlap。
-	//   原因：Overlap 只是"检测重叠"，完全不阻挡移动。
-	//         若设为 Overlap，即使 Tick 里用 bSweep=true 也穿过墙去，
-	//         因为扫掠时这些通道根本不算阻挡。
-	//
-	//   保持 Block 后：
-	//     · 方块撞墙会被挡住，不会穿墙
-	//     · 配合 Tick 里的 bSweep=true，方块会沿墙滑动
-	//     · 每帧重算朝玩家方向，玩家移动时方块能顺着墙追过去
+	ProjectileMovement->ProjectileGravityScale = 0.f;
+	ProjectileMovement->MaxSpeed = RecallSpeed + 1.f;
+
+	// 开启引擎内置 Homing 追踪玩家（会自动子步进，不穿模）
+	ProjectileMovement->bIsHomingProjectile = true;
+	ProjectileMovement->HomingAccelerationMagnitude = RecallHomingAcceleration;
+	if (USceneComponent* TargetRoot = Target->GetRootComponent())
+	{
+		ProjectileMovement->HomingTargetComponent = TargetRoot;
+	}
+
+	// ---------- 回收阶段：保持阻挡，不能穿过物体 ----------
+	// 方块会被墙挡住，但因为开启了 Homing，它每帧都在朝玩家加速，
+	// 所以会贴着墙滑动，玩家绕过墙角后就能飞出来。
 	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
-
-	LastFrameLocation = GetActorLocation();
-	RecallElapsed = 0.f;
+	CollisionComponent->SetCollisionResponseToChannel(ECC_Destructible, ECR_Block);
 
 	SetState(ECSProjectileState::Returning);
+
+	// 回收超时：防止被彻底卡死（例如被夹在两堵墙之间）永远飞不回来
+	RecallElapsed = 0.f;
+	RecallStartTime = 0.f;
+
+	const FVector Dir = (Target->GetActorLocation() - GetActorLocation()).GetSafeNormal();
+	RestartMovement(Dir.IsNearlyZero() ? FVector::ZeroVector : Dir * RecallSpeed);
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			RecallCheckTimerHandle, this,
+			&ACS_CubeProjectile::CheckRecallArrival,
+			CS_RECALL_CHECK_INTERVAL, true);
+	}
+
+	CheckRecallArrival();
 }
 
 
-bool ACS_CubeProjectile::CanBeRecalled() const
+void ACS_CubeProjectile::CheckRecallArrival()
 {
-	return State == ECSProjectileState::Flying;
+	if (!bIsReturning)
+	{
+		return;
+	}
+
+	AActor* Target = RecallTarget.Get();
+	if (!Target)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(RecallCheckTimerHandle);
+		}
+		bIsReturning = false;
+		SetState(ECSProjectileState::Recalled);
+		Destroy();
+		return;
+	}
+
+	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
+
+	// 用水平距离判定：贴墙时有高度差，3D 距离可能永远判定不到
+	const float Dist2D = FVector(ToTarget.X, ToTarget.Y, 0.f).Size();
+
+	if (Dist2D <= RecallAcceptRadius)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(RecallCheckTimerHandle);
+		}
+		bIsReturning = false;
+		SetState(ECSProjectileState::Recalled);
+		Destroy();
+		return;
+	}
+
+	// 回收超时兜底：方块被夹死时强制销毁
+	if (UWorld* World = GetWorld())
+	{
+		const float Now = World->GetTimeSeconds();
+		if (RecallStartTime <= 0.f)
+		{
+			RecallStartTime = Now;
+		}
+		else if (Now - RecallStartTime > RecallTimeout)
+		{
+			World->GetTimerManager().ClearTimer(RecallCheckTimerHandle);
+			bIsReturning = false;
+			SetState(ECSProjectileState::Recalled);
+			Destroy();
+			return;
+		}
+	}
+
+	// 每帧刷新朝玩家的速度，让方块能沿墙滑行
+	if (ProjectileMovement)
+	{
+		const FVector Dir = ToTarget.GetSafeNormal();
+		if (!Dir.IsNearlyZero())
+		{
+			ProjectileMovement->Velocity = Dir * RecallSpeed;
+		}
+	}
+}
+
+
+bool ACS_CubeProjectile::IsEnemyActor(const AActor* Actor)
+{
+	return Actor && Actor->IsA<ACS_EnemyCharacter>();
 }
 
 
@@ -579,6 +882,7 @@ void ACS_CubeProjectile::SetState(ECSProjectileState NewState)
 	{
 		return;
 	}
+
 	State = NewState;
 	OnStateChanged.Broadcast();
 }
@@ -597,7 +901,9 @@ ACS_CubeProjectile* ACS_CubeProjectile::SpawnAndLaunch(
 		return nullptr;
 	}
 
-	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
+	UWorld* World = GEngine
+		? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull)
+		: nullptr;
 	if (!World)
 	{
 		return nullptr;
@@ -614,14 +920,7 @@ ACS_CubeProjectile* ACS_CubeProjectile::SpawnAndLaunch(
 	SpawnParams.Instigator = InInstigator;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
-	// 没指定类就用 C++ 类本身；指定了蓝图子类则生成子类，
-	// 这样子类里配置的 CubeSize / ExplosionRadius 等参数才会生效
-	UClass* UseClass = ACS_CubeProjectile::StaticClass();
-	if (ProjectileClass)
-	{
-		UseClass = ProjectileClass.Get();
-	}
-
+	UClass* UseClass = ProjectileClass ? ProjectileClass.Get() : ACS_CubeProjectile::StaticClass();
 	ACS_CubeProjectile* Projectile = World->SpawnActor<ACS_CubeProjectile>(
 		UseClass, SpawnTransform, SpawnParams);
 
@@ -631,40 +930,4 @@ ACS_CubeProjectile* ACS_CubeProjectile::SpawnAndLaunch(
 	}
 
 	return Projectile;
-}
-
-
-void ACS_CubeProjectile::OnProjectileHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimitiveComponent* OtherComp,
-	FVector NormalImpulse, const FHitResult& Hit)
-{
-	// 忽略自己与拥有者
-	if (!OtherActor || OtherActor == this)
-	{
-		return;
-	}
-	if (bIgnoreOwner && OtherActor == GetOwner())
-	{
-		return;
-	}
-
-	// ---------- 情况一：撞到敌人 ----------
-	// 立即炸开周围敌人，方块本身继续飞行不受影响。
-	if (IsEnemyActor(OtherActor))
-	{
-		// 让方块移动时忽略该敌人，避免被物理挡住
-		CollisionComponent->IgnoreActorWhenMoving(OtherActor, true);
-
-		// 以方块当前位置为中心炸开
-		ExplodeAt(GetActorLocation(), ExplosionRadius);
-		return;
-	}
-
-	// ---------- 情况二：撞到其他物体（墙、地面、道具）----------
-	// 立即开始回收（飞回持有者）。
-	if (State == ECSProjectileState::Flying)
-	{
-		// 不调用 StopMovementImmediately：它会停用移动组件，
-		// 而回收阶段需要继续移动（由 Tick 用 SetActorLocation 驱动）。
-		StartRecall(GetOwner());
-	}
 }

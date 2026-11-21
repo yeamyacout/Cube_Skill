@@ -7,58 +7,31 @@
 #include "CS_CubeProjectile.generated.h"
 
 class UStaticMeshComponent;
-class UProjectileMovementComponent;
 class USphereComponent;
+class UProjectileMovementComponent;
 class ACS_EnemyCharacter;
 
-/**
- * 状态变化事件签名
- * 用 DECLARE_DYNAMIC_MULTICAST_DELEGATE（无参数）才能暴露给蓝图绑定
- */
+/** 状态变化事件 */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FCSOnProjectileStateChanged);
 
-/**
- * 抛射物的状态
- */
+/** 方块状态 */
 UENUM(BlueprintType)
 enum class ECSProjectileState : uint8
 {
-	/** 飞行中 */
 	Flying      UMETA(DisplayName = "飞行中"),
-
-	/** 正在被收回（朝持有者飞回） */
+	Blocked     UMETA(DisplayName = "已碰撞等待回收"),
 	Returning   UMETA(DisplayName = "收回中"),
-
-	/** 已回收完毕（已销毁） */
 	Recalled    UMETA(DisplayName = "已回收")
 };
 
 /**
- * ACS_CubeProjectile - 立方体抛射物
+ * ACS_CubeProjectile - 立方体投掷物
  *
- * ============ 核心行为 ============
- *
- * 1. 碰到**敌人**：
- *    - 方块像炸弹一样，把周围所有敌人**以方块为中心向四周炸开**
- *    - 弹开距离较远，带向上的抛射弧度
- *    - 方块本身不受影响，继续飞行
- *
- * 2. 碰到**非敌人物体**（墙、地面、道具）：
- *    - 方块立即停止，并朝持有者方向飞回
- *
- * 3. 超过最大飞行距离（默认 150 米）：
- *    - 自动飞回持有者
- *
- * 4. 回收过程：
- *    - 飞回途中撞到的敌人同样会被炸开
- *    - 飞到持有者身边后**直接删除**
- *
- * ============ 设计说明 ============
- *
- * 为什么用"向四周炸开"而不是"沿方向推"：
- *   沿单一方向推时，敌人很容易被自己的速度、AI 寻路、物理挤压
- *   带偏成横向移动，效果不稳定。爆炸式弹开用的是瞬时冲量，
- *   方向由"方块 -> 敌人"的相对位置决定，几何上明确，不会被干扰。
+ * 飞行：ProjectileMovementComponent 直线推进，无重力。
+ * 撞敌：球形 Overlap 主动检测（不依赖物理碰撞，远近都能命中），
+ *       持续把敌人向后方推 5 米，0.5 秒后回收。
+ * 撞物：转为真刚体，弹开 + 翻滚 + 落地滚动，0.5 秒后回收。
+ * 回收：Homing 追踪玩家，穿过地形飞回，250cm 内销毁。
  */
 UCLASS()
 class CUBE_SKILL_API ACS_CubeProjectile : public AActor
@@ -68,18 +41,7 @@ class CUBE_SKILL_API ACS_CubeProjectile : public AActor
 public:
 	ACS_CubeProjectile();
 
-	/**
-	 * 生成并发射抛射物的便捷入口
-	 *
-	 * @param WorldContextObject  任意对象（用于取 World）
-	 * @param SpawnTransform      生成位置与朝向
-	 * @param Direction           飞行方向（会自动归一化）
-	 * @param InOwner             拥有者（通常是发射者），回收时飞回它
-	 * @param InInstigator        发起者，可为空
-	 * @param ProjectileClass     要生成的类。传 nullptr 用 ACS_CubeProjectile 本身；
-	 *                            传蓝图子类则用子类（可在蓝图里调所有参数）
-	 * @return                    生成的抛射物；失败返回 nullptr
-	 */
+	/** 生成并发射 */
 	UFUNCTION(BlueprintCallable, Category = "CS|Projectile",
 		meta = (WorldContext = "WorldContextObject", AdvancedDisplay = "InOwner,InInstigator,ProjectileClass"))
 	static ACS_CubeProjectile* SpawnAndLaunch(
@@ -90,225 +52,314 @@ public:
 		APawn* InInstigator = nullptr,
 		TSubclassOf<ACS_CubeProjectile> ProjectileClass = nullptr);
 
-	/** 让本抛射物朝指定方向发射 */
+	/** 朝指定方向发射 */
 	UFUNCTION(BlueprintCallable, Category = "CS|Projectile")
 	void LaunchInDirection(const FVector& Direction);
 
-	/**
-	 * 开始回收：方块飞回目标
-	 *
-	 * @param TargetActor  飞向的目标；为空则回退到 Owner
-	 * @param ReturnSpeed  回飞速度，<=0 则用默认值
-	 */
+	/** 立即命中敌人（近距离发射时绕过物理碰撞直接生效） */
 	UFUNCTION(BlueprintCallable, Category = "CS|Projectile")
-	void StartRecall(AActor* TargetActor = nullptr, float ReturnSpeed = 0.f);
+	void HitEnemyImmediately(ACS_EnemyCharacter* Enemy, const FVector& Direction);
 
-	/**
-	 * 对指定位置触发一次爆炸式弹开
-	 * 通常由内部在撞到敌人时调用，也可供外部复用
-	 *
-	 * @param Epicenter  爆炸中心（一般就是方块位置）
-	 * @param Radius     影响半径，<=0 则用配置的 ExplosionRadius
-	 */
+	/** 开始回收 */
 	UFUNCTION(BlueprintCallable, Category = "CS|Projectile")
-	void ExplodeAt(const FVector& Epicenter, float Radius = 0.f);
+	void StartRecall(float ReturnSpeed = 0.f);
 
-	/** 当前状态 */
 	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
 	ECSProjectileState GetProjectileState() const { return State; }
 
-	/** 是否处于可被回收的状态 */
 	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
-	bool CanBeRecalled() const;
+	bool IsFlying() const { return bIsFlying; }
 
-	/** 当前飞行速度（不叫 GetVelocity，避免与 AActor 同名冲突） */
 	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
 	FVector GetFlightVelocity() const;
 
-	/** 已飞行的距离（cm） */
-	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
-	float GetTraveledDistance() const { return TraveledDistance; }
-
-	/** 状态变化时广播，方便外部（玩家、UI）响应 */
 	UPROPERTY(BlueprintAssignable, Category = "CS|Projectile")
 	FCSOnProjectileStateChanged OnStateChanged;
 
 protected:
 	virtual void BeginPlay() override;
-	virtual void Tick(float DeltaSeconds) override;
 
-	/**
-	 * 碰撞回调
-	 *   - 撞到敌人：触发爆炸弹开，方块继续飞
-	 *   - 撞到其他：停下并开始回收
-	 */
+	/** 物理碰撞回调（兜底，主检测用 Overlap） */
 	UFUNCTION()
 	void OnProjectileHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimitiveComponent* OtherComp,
 		FVector NormalImpulse, const FHitResult& Hit);
 
-	/** 每帧检测周围敌人并炸开（兜底，防止某些接触方式收不到 Hit 回调） */
-	void CheckForEnemyExplosion(float DeltaSeconds);
+	/** 出生保护期结束 */
+	UFUNCTION()
+	void ArmCollision();
 
-	/** 判断某个 Actor 是不是敌人 */
+	/** 球形检测周围敌人 */
+	UFUNCTION()
+	void CheckNearbyEnemies();
+
+	/** 检测与玩家距离，超限则回收 */
+	UFUNCTION()
+	void CheckTravelDistance();
+
+	/** 每 33ms 推动一次敌人 */
+	UFUNCTION()
+	void ApplyEnemyPush();
+
+	/** 延迟结束，开始回收 */
+	UFUNCTION()
+	void HandleRecallDelayFinished();
+
+	/** 检查是否已回到玩家身边 */
+	void CheckRecallArrival();
+
 	static bool IsEnemyActor(const AActor* Actor);
-
-	/**
-	 * 给单个敌人施加"炸开"冲量
-	 *
-	 * @param Enemy      目标敌人
-	 * @param Epicenter  爆炸中心
-	 * @param Strength   冲量强度系数（0~1，距离越远越小）
-	 */
-	void BlastEnemy(ACS_EnemyCharacter* Enemy, const FVector& Epicenter, float Strength);
-
-	/** 切换状态并广播 */
 	void SetState(ECSProjectileState NewState);
 
-	/**
-	 * 应用待发射的速度
-	 * 由 LaunchInDirection 与 BeginPlay 共同调用，
-	 * 保证无论 SpawnActor 与 BeginPlay 的先后顺序如何，速度都能正确设置。
-	 */
+	/** 重启移动组件（碰撞后 UpdatedComponent 会变 NULL，必须重绑） */
+	void RestartMovement(const FVector& NewVelocity);
+
+	/** 应用发射速度 */
 	void ApplyLaunchVelocity();
+
+	/** 命中敌人：推敌 + 停住 + 延迟回收 */
+	void ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVector& PushDir);
+
+	/** 停止推动 */
+	void StopEnemyPush();
+
+	/** 转为真刚体 */
+	void SwitchToPhysicsOnImpact(const FHitResult& Hit, bool bIsEnemyImpact = false);
+
+	/** 从刚体恢复为移动组件模式（回收前必须调用） */
+	void RestoreFromPhysics();
 
 	// ---------- 组件 ----------
 
-	/** 立方体网格组件（负责显示） */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|Components")
 	TObjectPtr<UStaticMeshComponent> MeshComponent;
 
-	/** 碰撞球（负责命中检测） */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|Components")
 	TObjectPtr<USphereComponent> CollisionComponent;
 
-	/** 飞行控制组件 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|Components")
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
 
-	// ---------- 飞行参数 ----------
+	// ---------- 飞行 ----------
 
-	/** 初始飞行速度（cm/s） */
+	/** 初速度（cm/s） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Movement", meta = (ClampMin = "0.0"))
 	float InitialSpeed = 2000.f;
 
-	/** 重力影响系数：0 = 直线飞行，1 = 正常重力 */
+	/** 重力系数，0 = 无重力直线飞行 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Movement", meta = (ClampMin = "0.0"))
-	float GravityScale = 0.3f;
+	float GravityScale = 0.f;
 
 	/** 立方体边长（cm） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Visual", meta = (ClampMin = "1.0"))
 	float CubeSize = 150.f;
 
-	// ---------- 爆炸弹开参数 ----------
+	// ---------- 回收 ----------
 
-	/**
-	 * 爆炸影响半径（cm）
-	 * 这个范围内的敌人都会被炸开。默认 400cm = 4 米
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Explosion", meta = (ClampMin = "1.0"))
-	float ExplosionRadius = 400.f;
-
-	/**
-	 * 弹开力度（cm/s），决定敌人被炸飞的距离
-	 * 数值越大飞得越远。默认 1800 约能把敌人弹飞 10+ 米
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Explosion", meta = (ClampMin = "0.0"))
-	float BlastImpulse = 1800.f;
-
-	/**
-	 * 向上抛射比例（0~1）
-	 * 0.6 表示水平方向 0.6 倍、向上 0.8 倍，形成明显的抛物线弹飞
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Explosion", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float BlastUpwardRatio = 0.6f;
-
-	/**
-	 * 同一个敌人两次被炸的最小间隔（秒）
-	 * 防止方块持续贴着敌人时每帧都炸，导致速度失控
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Explosion", meta = (ClampMin = "0.0"))
-	float BlastCooldown = 0.35f;
-
-	/**
-	 * 被击飞期间锁定 AI 移动的最长时间（秒）
-	 *
-	 * 正常情况下敌人在落地时会自动解除锁定（见 ACS_EnemyCharacter::Landed），
-	 * 这个值只是兜底：万一敌人卡在半空、掉出地图等异常情况，
-	 * 超过这个时间也会强制恢复 AI，避免敌人永久僵住。
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Explosion", meta = (ClampMin = "0.1"))
-	float KnockbackLockDuration = 3.f;
-
-	// ---------- 回收参数 ----------
-
-	/** 最大飞行距离（cm），超过后自动回收。默认 5000 = 50 米 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "100.0"))
-	float MaxTravelDistance = 5000.f;
-
-	/** 回收时的飞行速度（cm/s） */
+	/** 撞物体后延迟多久回收（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
-	float RecallSpeed = 2500.f;
+	float RecallDelayAfterHit = 1.f;
 
-	/** 回收时距离持有者多近算"接住"，到达后直接销毁（cm） */
+	/** 回收飞行速度（cm/s） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
+	float RecallSpeed = 4000.f;
+
+	/** Homing 追踪加速度，越大转向越快 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
+	float RecallHomingAcceleration = 12000.f;
+
+	/** 接到距离（cm），进入此范围即销毁 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "1.0"))
 	float RecallAcceptRadius = 250.f;
 
 	/**
-	 * 回收过程的最长持续时间（秒）
+	 * 最大飞行距离（米）
 	 *
-	 * 注意：方块被墙挡住时会一直贴着墙等玩家过来，
-	 * 所以这个值不能太短，否则玩家还没走到方块就消失了。
-	 * 它只是最后的安全网——彻底被隔断（比如隔着厚墙）时才生效。
+	 * 方块距离玩家超过这个值就立即回收。
+	 * 注意这里是**米**，内部会换算成厘米。
+	 *
+	 * 35 米。
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.5"))
-	float RecallMaxDuration = 30.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Flight|Range", meta = (ClampMin = "1.0", Units = "m"))
+	float MaxTravelDistanceMeters = 35.f;
 
-	/** 是否忽略拥有者（避免出生瞬间撞到自己） */
+	/** 最大飞行距离（厘米），内部使用，由 MaxTravelDistanceMeters 换算 */
+	float MaxTravelDistance = 3500.f;
+
+/** 回收超时（秒），防止被夹死永久滞留 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "1.0"))
+	float RecallTimeout = 15.f;
+
+	/** 回收已持续的时间（秒） */
+	float RecallElapsed = 0.f;
+
+	/** 回收开始的时间戳（世界时间），用于超时判定 */
+	float RecallStartTime = 0.f;
+
+	/** 距离检测间隔（秒），同时也是卡死兜底的检查频率 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.02"))
+	float DistanceCheckInterval = 0.1f;
+
+	// ---------- 卡死兜底 ----------
+
+	/**
+	 * 发射后多久开始接受"靠近回收"（秒）
+	 *
+	 * 方块发射后经过这段时间，玩家走近到一定距离内就会触发回收。
+	 * 限制时间是为了避免刚发射时玩家本来就在旁边，方块立刻被召回。
+	 *
+	 * 2 秒。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
+	float MinTimeBeforeCloseRecall = 2.f;
+
+	/**
+	 * 靠近回收的触发距离（cm）
+	 *
+	 * 发射超过 MinTimeBeforeCloseRecall 秒后，
+	 * 方块与玩家距离小于这个值就强制回收。
+	 *
+	 * 100cm = 1 米。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseProximityDistance = 100.f;
+
+/** 卡死判定距离（cm）：离玩家很近 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0", Units = "cm"))
+	float StuckTeleportRecoverDistance = 50.f;
+
+/** 卡死判定速度（cm/s）：几乎不动 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
+	float StuckSpeedThreshold = 50.f;
+
+	// ---------- 碰撞 ----------
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Collision")
 	bool bIgnoreOwner = true;
 
+	/** 出生保护时间（秒），期间忽略碰撞，避免出生即撞 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Collision", meta = (ClampMin = "0.0"))
+	float SpawnCollisionGraceTime = 0.2f;
+
+	// ---------- 撞敌人 ----------
+
+	/** 推动敌人的速度（cm/s），1000 × 0.5 秒 = 5 米 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
+	float EnemyPushSpeed = 1000.f;
+
+	/** 推动持续时间（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
+	float EnemyPushDuration = 0.5f;
+
+	/** 撞敌人后延迟回收（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
+	float EnemyHitRecallDelay = 0.5f;
+
+	/** 敌人 AI 锁定时长（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
+	float EnemyKnockbackLockTime = 3.f;
+
+	/** 敌人检测半径（cm） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "1.0"))
+	float EnemyDetectRadius = 220.f;
+
+	/** 敌人检测间隔（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.01"))
+	float EnemyDetectInterval = 0.03f;
+
+	// ---------- 碰撞转物理 ----------
+
+	/** 碰撞后是否转为真刚体（弹开 + 翻滚 + 滚动） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Physics")
+	bool bEnablePhysicsOnImpact = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Physics", meta = (ClampMin = "0.1"))
+	float ImpactPhysicsMass = 15.f;
+
+	/** 反弹系数 0~1 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Physics", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ImpactRestitution = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Physics", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+	float ImpactLinearDamping = 0.3f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Physics", meta = (ClampMin = "0.0", ClampMax = "20.0"))
+	float ImpactAngularDamping = 1.5f;
+
+	// ---------- 旋转开关（蓝图可视化） ----------
+
+	/** 撞墙/地面时是否让方块翻滚旋转 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Rotation")
+	bool bEnableRotationOnSurfaceImpact = true;
+
+	/** 撞敌人时是否让方块翻滚旋转 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Rotation")
+	bool bEnableRotationOnEnemyImpact = true;
+
+	/** 撞墙时的翻滚力度（0 = 不转） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Rotation", meta = (ClampMin = "0.0"))
+	float SurfaceImpactAngularImpulse = 300.f;
+
+	/** 撞敌人时的翻滚力度（0 = 不转） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Rotation", meta = (ClampMin = "0.0"))
+	float EnemyImpactAngularImpulse = 300.f;
+
 	// ---------- 运行时状态 ----------
 
-	/** 当前状态 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
 	ECSProjectileState State = ECSProjectileState::Flying;
 
-	/** 已飞行的总距离（cm），用于自动回收判定 */
-	float TraveledDistance = 0.f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
+	bool bIsFlying = false;
 
-	/** 上一帧的位置，用于计算飞行距离 */
-	FVector LastFrameLocation = FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
+	bool bHasCollided = false;
 
-	/**
-	 * 起飞宽限期（秒）
-	 * 方块刚生成时可能与角色胶囊体/地面重叠，前几帧位移很小是正常的。
-	 * 这个时间内的"位移小"不判定为卡住，避免刚发射就被误回收。
-	 */
-	float StuckGraceTime = 0.f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
+	bool bIsReturning = false;
 
-	/** 期望的发射方向，BeginPlay 时复用，保证时序无关 */
+	/** 出生保护是否结束 */
+	bool bCollisionArmed = false;
+
+	/** 是否已转为刚体 */
+	bool bSwitchedToPhysics = false;
+
+	/** 是否正在推动敌人 */
+	bool bIsPushingEnemy = false;
+
+	/** 期望的发射方向 */
 	FVector PendingLaunchDirection = FVector::ForwardVector;
-
-	/** 是否有待应用的发射（配合 PendingLaunchDirection） */
 	bool bHasPendingLaunch = false;
 
-	/** 回收开始后经过的时间（秒），用于超时保护 */
-	float RecallElapsed = 0.f;
+	/** 锁定的推力方向 */
+	FVector LockedPushDirection = FVector::ZeroVector;
 
-	/**
-	 * 回收途中当前是否被墙体挡住（只读，供调试或手感调整）
-	 * 被挡住时方块会沿墙滑动，仍然朝向玩家移动
-	 */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Projectile|State")
-	bool bIsBlockedWhileReturning = false;
+	/** 发射起点 */
+	FVector LaunchOrigin = FVector::ZeroVector;
+	bool bLaunchOriginValid = false;
 
-	/**
-	 * 每个敌人上次被炸的时间（秒）
-	 * key 用弱引用，避免敌人销毁后残留导致野指针
-	 * 用于实现 BlastCooldown 冷却
-	 */
-	TMap<TWeakObjectPtr<ACS_EnemyCharacter>, float> LastBlastTimeMap;
+	/** 发射时刻（世界时间秒），用于"发射 N 秒后才能靠近回收"的判定 */
+	float LaunchStartTime = 0.f;
 
-	/** 回收目标（通常是持有者）。用弱引用防止目标先被销毁 */
+	/** 回收目标 */
 	TWeakObjectPtr<AActor> RecallTarget;
+
+	/** 正在被推的敌人 */
+	TWeakObjectPtr<ACS_EnemyCharacter> PushedEnemy;
+
+	/** 已命中过的敌人，避免重复推 */
+	TSet<TWeakObjectPtr<ACS_EnemyCharacter>> AlreadyHitEnemies;
+
+	/** 敌人原始移动参数，推动结束后还原 */
+	float SavedEnemyMaxWalkSpeed = 600.f;
+	float SavedEnemyBrakingDeceleration = 2048.f;
+
+	// ---------- 定时器 ----------
+
+	FTimerHandle SpawnGraceTimerHandle;      // 出生保护
+	FTimerHandle DistanceCheckTimerHandle;   // 距离检测
+	FTimerHandle EnemyDetectTimerHandle;     // 敌人检测
+	FTimerHandle PushTimerHandle;            // 持续推动
+	FTimerHandle PushStopTimerHandle;        // 停止推动
+	FTimerHandle RecallDelayTimerHandle;     // 延迟回收
+	FTimerHandle RecallCheckTimerHandle;     // 到达判定
 };

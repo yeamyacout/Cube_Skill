@@ -4,12 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Animation/AnimMontage.h"
 #include "CS_PlayerController.generated.h"
 
 struct FInputActionValue;
 class UInputAction;
 class UInputMappingContext;
 class ACS_CubeProjectile;
+class ACS_EnemyCharacter;
 /**
  * 
  */
@@ -47,7 +49,99 @@ private:
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile")
 	TSubclassOf<ACS_CubeProjectile> ProjectileClass;
-	
+
+/** 方块生成点距相机的距离（cm），需让方块脱离玩家身体 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "50.0"))
+	float SpawnForwardOffset = 200.f;
+
+/** 探测时额外延伸的距离（cm） */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "0.0"))
+	float SpawnWallClearance = 110.f;
+
+/** 生成点距相机的最小距离（cm） */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "10.0"))
+	float SpawnMinDistance = 80.f;
+
+/** 生成点与障碍之间必须保留的间隙（cm），需大于方块碰撞球半径 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "0.0", Units = "cm"))
+	float SpawnObstacleGap = 170.f;
+
+/** 近距离敌人的判定距离（cm），命中时绕过物理碰撞直接生效 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "0.0", Units = "cm"))
+	float CloseRangeEnemyDistance = 300.f;
+
+	/**
+	 * 当前在场的方块（同一时间只允许存在一个）
+	 *
+	 * 用途：左键发射前检查是否已有方块在场。
+	 * 用 TWeakObjectPtr 而不是裸指针，因为方块被回收时会自行销毁，
+	 * 弱引用能自动感知"对象没了"，不会野指针崩溃。
+	 */
+	TWeakObjectPtr<ACS_CubeProjectile> ActiveProjectile;
+
+	// ============================================================
+	//  攻击动画相关
+	// ============================================================
+
+	/**
+	 * 攻击蒙太奇
+	 *
+	 * 播放后，动画里的 UCS_AttackNotify 会在"投掷帧"通知控制器生成方块。
+	 * 留空则左键不播动画，直接生成方块（保留旧的即时投掷行为）。
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Attack")
+	TObjectPtr<UAnimMontage> AttackMontage;
+
+	/** 是否正在播放攻击动画（用于阻止动画播完前重复触发） */
+	bool bIsAttacking = false;
+
+	/**
+	 * 本次攻击是否已经生成过方块
+	 * 防止动画循环播放或 Notify 重复触发导致一次攻击扔出多个
+	 */
+	bool bHasThrownThisAttack = false;
+
+	/** 蒙太奇播放结束的回调（放在成员里，避免回调期间被 GC） */
+	FOnMontageEnded AttackMontageEndedDelegate;
+
+	/** 蒙太奇被中断时的处理 */
+	void HandleAttackMontageEnded(UAnimMontage* Montage, bool bInterrupted);
+
+public:
+	/** 当前是否已经有方块在场（有则不允许再次发射） */
+	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
+	bool HasActiveProjectile() const;
+
+	/** 获取当前在场的方块（可能为空） */
+	UFUNCTION(BlueprintPure, Category = "CS|Projectile")
+	ACS_CubeProjectile* GetActiveProjectile() const;
+
+	/** 当前是否正在播放攻击动画 */
+	UFUNCTION(BlueprintPure, Category = "CS|Attack")
+	bool IsAttacking() const { return bIsAttacking; }
+
+	/**
+	 * 攻击动画播到"投掷帧"时由 UCS_AttackNotify 调用
+	 *
+	 * 这是真正生成方块的地方。左键只负责播动画，
+	 * 方块由动画进度驱动生成，保证投掷动作与方块飞出对齐。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "CS|Attack")
+	void OnAttackThrowNotify();
+
+private:
+	/** 真正生成并发射方块（相机前方） */
+	void SpawnProjectile();
+
+	/**
+	 * 贴脸发射时要直接命中的敌人
+	 *
+	 * 发射前射线探测到前方很近处有敌人时记录下来，
+	 * 方块生成后立即调用 HitEnemyImmediately 对它生效，
+	 * 绕过物理碰撞（方块无法避免地与敌人重叠，碰撞检测不到）。
+	 */
+	TWeakObjectPtr<ACS_EnemyCharacter> PendingNearbyEnemy;
+
 	void Jump();
 	void Stopjump();
 	void Move(const FInputActionValue &Value);
