@@ -6,6 +6,10 @@
 // AActor：需要访问 GetOwner()
 #include "GameFramework/Actor.h"
 
+// 专门给本组件用的日志分类。
+// Output Log 的过滤框里输入 "CS_Health" 就能只看血量的日志，不会被别的系统刷屏。
+DEFINE_LOG_CATEGORY_STATIC(LogCSHealth, Log, All);
+
 
 /**
  * 构造函数
@@ -64,7 +68,7 @@ void UCS_HealthComponent::BeginPlay()
 	// 理由：UI 通常在角色 Spawn 后才创建并绑定事件，
 	// 如果不主动广播一次，血条会一直显示空直到第一次受伤。
 	// Delta 传 0 表示"这是初始状态，不是变化"。
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, 0.f);
+	BroadcastHealthChanged(0.f);
 }
 
 
@@ -142,9 +146,17 @@ float UCS_HealthComponent::ApplyDamage(float DamageAmount, AActor* DamageCauser)
 	// 重置自动回复的冷却计时：刚挨打，回血要重新等待 RegenDelay。
 	TimeSinceLastDamage = 0.f;
 
+	// 调试日志：勾了 bLogDamage 才打印，用来确认"伤害到底有没有送到组件"。
+	if (bLogDamage)
+	{
+		UE_LOG(LogCSHealth, Log, TEXT("【受伤】%s 受到 %.1f 伤害（来源: %s），剩余 %.1f / %.1f"),
+			*GetNameSafe(GetOwner()), ActualDamage,
+			*GetNameSafe(DamageCauser), CurrentHealth, MaxHealth);
+	}
+
 	// 广播血量变化事件。Delta 传负数表示掉血，
 	// UI 可以据此触发受击闪红等表现。
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, -ActualDamage);
+	BroadcastHealthChanged(-ActualDamage);
 
 	// 血量归零 -> 进入死亡流程
 	if (CurrentHealth <= 0.f)
@@ -188,7 +200,7 @@ float UCS_HealthComponent::Heal(float HealAmount)
 	CurrentHealth = HealthAfter;
 
 	// 广播：Delta 为正表示回血
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, ActualHeal);
+	BroadcastHealthChanged(ActualHeal);
 
 	return ActualHeal;
 }
@@ -227,6 +239,11 @@ void UCS_HealthComponent::ResetHealth()
 	// 清除死亡状态，让组件重新可用
 	bIsDead = false;
 
+	// 复活后必须把自动回复的 Tick 重新打开。
+	// 因为 HandleDeath 里把它关掉了，这里不恢复的话，
+	// 死了又复活之后就再也不会自动回血（这是之前的 bug）。
+	SetComponentTickEnabled(bEnableRegen);
+
 	// 重置受击冷却（否则刚复活就立刻开始回血，虽然也无害但语义更清晰）
 	TimeSinceLastDamage = 0.f;
 
@@ -235,7 +252,32 @@ void UCS_HealthComponent::ResetHealth()
 	CurrentHealth = MaxHealth;
 
 	// 广播（即使本来就是满血也会广播一次，让 UI 状态同步）
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, Delta);
+	BroadcastHealthChanged(Delta);
+}
+
+
+/**
+ * 运行时开关自动回血
+ *
+ * 面板上的 bEnableRegen 只是个"初始配置"，BeginPlay 读一次就再也不看了。
+ * 真正想在游戏里开关（进战斗关掉、脱战打开），必须调这个函数：
+ * 因为它会同时把组件的 Tick 打开/关掉。
+ */
+void UCS_HealthComponent::SetRegenEnabled(bool bEnabled)
+{
+	bEnableRegen = bEnabled;
+
+	// 关键一步：bool 和 Tick 必须一起变。
+	// 只改 bool 不改 Tick 的话，blueprint 里 Set 完看起来"没反应"。
+	// 已死亡时无论如何都不开（死人不需要回血）。
+	SetComponentTickEnabled(bEnableRegen && !bIsDead);
+
+	// 刚打开回复时把受击冷却清零：
+	// 语义上等于"从现在开始重新计 3 秒"，而不是"立刻开始回血"。
+	if (bEnabled)
+	{
+		TimeSinceLastDamage = 0.f;
+	}
 }
 
 
@@ -248,6 +290,43 @@ void UCS_HealthComponent::ResetHealth()
 float UCS_HealthComponent::GetHealthPercent() const
 {
 	return MaxHealth > 0.f ? FMath::Clamp(CurrentHealth / MaxHealth, 0.f, 1.f) : 0.f;
+}
+
+
+/**
+ * 统一的"血量变了"广播入口
+ *
+ * 两个事件一起发，保证订阅方拿到的永远是一致的：
+ *   1. OnHealthChanged        —— 原始数值 + 变化量（显示 "80/100"、受击闪红要用）
+ *   2. OnHealthPercentChanged —— 只要比例（血条直接 Set Percent，不用自己除）
+ *
+ * 之所以集中到这一个函数里，是因为修改血量的路径有 5 条
+ * （受伤 / 治疗 / SetHealth / 自动回复 / 开局初始化），
+ * 分散写 Broadcast 迟早会漏掉某一条。
+ */
+void UCS_HealthComponent::BroadcastHealthChanged(float Delta)
+{
+	// 调试：把"这次广播有没有人听"打出来
+	//   - 监听者 0 个  -> 绑定没成功（UI 没 Construct / Cast 失败 / 绑错对象）
+	//   - 监听者 1 个  -> 绑定成功，事件已经送到 UI，问题在 UI 那边
+	if (bLogDamage)
+	{
+		const TArray<UObject*> RawListeners = OnHealthChanged.GetAllObjects();
+		const TArray<UObject*> PercentListeners = OnHealthPercentChanged.GetAllObjects();
+
+		UE_LOG(LogCSHealth, Log,
+			TEXT("【广播】%s  %.1f/%.1f (Delta %.1f)  OnHealthChanged 监听者:%d  OnHealthPercentChanged 监听者:%d"),
+			*GetNameSafe(GetOwner()), CurrentHealth, MaxHealth, Delta,
+			RawListeners.Num(), PercentListeners.Num());
+
+		for (UObject* Listener : PercentListeners)
+		{
+			UE_LOG(LogCSHealth, Log, TEXT("     └ 百分比监听者: %s"), *GetNameSafe(Listener));
+		}
+	}
+
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, Delta);
+	OnHealthPercentChanged.Broadcast(GetHealthPercent());
 }
 
 
@@ -277,7 +356,7 @@ void UCS_HealthComponent::ChangeHealthInternal(float NewHealth, AActor* DamageCa
 	CurrentHealth = Clamped;
 
 	// 广播变化
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth, Delta);
+	BroadcastHealthChanged(Delta);
 
 	// 归零则死亡。注意这里额外判断 !bIsDead，
 	// 防止在已死亡状态下重复进入 HandleDeath 流程。
