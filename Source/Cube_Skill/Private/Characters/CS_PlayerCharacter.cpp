@@ -4,6 +4,7 @@
 #include "Characters/CS_PlayerCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/CS_HealthComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -32,7 +33,9 @@ ACS_PlayerCharacter::ACS_PlayerCharacter()
 	
 	FollowCamera->SetRelativeLocation(FVector(0.f, 0.f, 64.f)); 
 	
-	FollowCamera->bUsePawnControlRotation = true; 
+	FollowCamera->bUsePawnControlRotation = true;
+
+	HealthComponent = CreateDefaultSubobject<UCS_HealthComponent>(TEXT("HealthComponent"));
 }
 
 
