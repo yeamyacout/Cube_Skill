@@ -40,6 +40,19 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
 	TObjectPtr<UInputAction> PrimaryAction;
 
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> FireCubeAction;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> LightCubeAction;
+	
+	
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> NatchCubeAction;
+	
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> BeginCubeAction;
+	
 	/**
 	 * 左键发射的方块类
 	 *

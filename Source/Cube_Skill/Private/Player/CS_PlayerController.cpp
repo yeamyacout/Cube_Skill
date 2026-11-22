@@ -36,47 +36,19 @@ void ACS_PlayerController::SetupInputComponent()
 	EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACS_PlayerController::Stopjump);
 	EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ACS_PlayerController::Move);
 	EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this,&ACS_PlayerController::Look);
-
+	
+	// 方块切换：用 Started 保证按一次只触发一次
+	// （Triggered 按住期间每帧都会触发，会导致反复切换）
+	EnhancedInputComponent->BindAction(FireCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::SelectType1);
+	EnhancedInputComponent->BindAction(LightCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::SelectType2);
+	EnhancedInputComponent->BindAction(NatchCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::SelectType3);
+	EnhancedInputComponent->BindAction(BeginCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::ToggleDefaultProjectile);
+	
 	// 左键发射：必须用 Started 而不是 Triggered。
 	//   Triggered：按住期间每帧都触发 -> 一次点击可能连发多颗
 	//   Started  ：只在按下的瞬间触发一次 -> 正好符合"点一下扔一个"
 	EnhancedInputComponent->BindAction(PrimaryAction, ETriggerEvent::Started, this, &ACS_PlayerController::Primary);
 
-	// ---------- 数字键 1/2/3 切换方块类型 ----------
-	// 运行时动态创建 InputAction 并绑定到数字键，
-	// 省去在编辑器里手工创建 IA_Switch1/2/3 资产。
-	struct FSwitchKeyBinding
-	{
-		const TCHAR* ActionName;
-		FKey Key;
-		void (ACS_PlayerController::*Func)();
-	};
-
-	const FSwitchKeyBinding Bindings[] =
-	{
-		{ TEXT("IA_SwitchCube1"), EKeys::One, &ACS_PlayerController::SelectType1 },
-		{ TEXT("IA_SwitchCube2"), EKeys::Two, &ACS_PlayerController::SelectType2 },
-		{ TEXT("IA_SwitchCube3"), EKeys::Three, &ACS_PlayerController::SelectType3 },
-		{ TEXT("IA_ToggleCube"), EKeys::T, &ACS_PlayerController::ToggleDefaultProjectile },
-	};
-
-	for (const FSwitchKeyBinding& Binding : Bindings)
-	{
-		UInputAction* Action = NewObject<UInputAction>(this, Binding.ActionName);
-		Action->ValueType = EInputActionValueType::Boolean;
-
-		// 每次按键触发一次
-		EnhancedInputComponent->BindAction(Action, ETriggerEvent::Started, this, Binding.Func);
-
-		// 直接给默认 InputMappingContext 加上这个按键映射
-		for (UInputMappingContext* IMC : InputMappingContexts)
-		{
-			if (IsValid(IMC))
-			{
-				IMC->MapKey(Action, Binding.Key);
-			}
-		}
-	}
 }
 
 
