@@ -51,6 +51,61 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile")
 	TSubclassOf<ACS_CubeProjectile> ProjectileClass;
 
+	// ---------- 方块类型切换 ----------
+
+	/**
+	 * 可切换的方块类列表，索引 0/1/2 分别对应数字键 1/2/3
+	 *
+	 * 留空则一直使用 ProjectileClass。
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile|Switch")
+	TArray<TSubclassOf<ACS_CubeProjectile>> SwitchableProjectiles;
+
+	/**
+	 * 初始方块类（默认白色方块）
+	 *
+	 * 按 T 键在「初始方块」和「上次选中的特殊方块」之间切换。
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile|Switch")
+	TSubclassOf<ACS_CubeProjectile> DefaultProjectileClass;
+
+	/** 当前选中的方块索引（-1 = 初始方块） */
+	UPROPERTY(VisibleAnywhere, Category = "CS|Projectile|Switch")
+	int32 CurrentProjectileIndex = -1;
+
+	/** 上一次选中的特殊方块索引（按 T 回切用） */
+	UPROPERTY(VisibleAnywhere, Category = "CS|Projectile|Switch")
+	int32 LastSpecialProjectileIndex = 0;
+
+	/** 当前是否处于初始方块状态 */
+	UPROPERTY(VisibleAnywhere, Category = "CS|Projectile|Switch")
+	bool bUsingDefaultProjectile = true;
+
+public:
+	/** 切换到指定索引的方块；越界会被忽略 */
+	UFUNCTION(BlueprintCallable, Category = "CS|Projectile|Switch")
+	void SelectProjectileType(int32 Index);
+
+	/** 当前方块索引（-1 表示初始方块） */
+	UFUNCTION(BlueprintPure, Category = "CS|Projectile|Switch")
+	int32 GetCurrentProjectileIndex() const { return CurrentProjectileIndex; }
+
+	/** 当前是否使用初始方块 */
+	UFUNCTION(BlueprintPure, Category = "CS|Projectile|Switch")
+	bool IsUsingDefaultProjectile() const { return bUsingDefaultProjectile; }
+
+private:
+	/** 数字键 1/2/3 切换方块 */
+	void SelectType1();
+	void SelectType2();
+	void SelectType3();
+
+	/** T 键：在初始方块与上次特殊方块之间切换 */
+	void ToggleDefaultProjectile();
+
+	/** 取得当前应使用的方块类 */
+	TSubclassOf<ACS_CubeProjectile> GetActiveProjectileClass() const;
+
 /** 方块生成点距相机的距离（cm），需让方块脱离玩家身体 */
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Projectile", meta = (ClampMin = "50.0"))
 	float SpawnForwardOffset = 200.f;

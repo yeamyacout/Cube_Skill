@@ -10,6 +10,8 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
@@ -35,6 +37,10 @@ ACS_CubeProjectile::ACS_CubeProjectile()
 	CollisionComponent = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionComponent"));
 	SetRootComponent(CollisionComponent);
 
+	// 必须设为 Movable，否则 ProjectileMovementComponent 无法移动它
+	// （会报 "CollisionComponent的移动性必须为可移动" 警告）
+	CollisionComponent->SetMobility(EComponentMobility::Movable);
+
 	CollisionComponent->InitSphereRadius(20.f);
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	CollisionComponent->SetCollisionObjectType(ECC_WorldDynamic);
@@ -48,6 +54,10 @@ ACS_CubeProjectile::ACS_CubeProjectile()
 	// ---------- 视觉网格 ----------
 	MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
 	MeshComponent->SetupAttachment(CollisionComponent);
+
+	// 同样必须是 Movable（StaticMeshComponent 默认是 Static）
+	MeshComponent->SetMobility(EComponentMobility::Movable);
+
 	MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	MeshComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 
@@ -79,6 +89,24 @@ ACS_CubeProjectile::ACS_CubeProjectile()
 }
 
 
+void ACS_CubeProjectile::SetMeshRelativeScale(const FVector& NewScale)
+{
+	if (MeshComponent)
+	{
+		MeshComponent->SetRelativeScale3D(NewScale);
+	}
+
+	// 碰撞球半径跟随网格缩放：
+	// 引擎内置 Cube 边长 100，缩放 S 后视觉边长 = 100 * S，
+	// 碰撞球半径取其一半再放大 2 倍 = 100 * S
+	if (CollisionComponent)
+	{
+		const float MaxScale = FMath::Max3(NewScale.X, NewScale.Y, NewScale.Z);
+		CollisionComponent->SetSphereRadius(100.f * MaxScale);
+	}
+}
+
+
 void ACS_CubeProjectile::BeginPlay()
 {
 	Super::BeginPlay();
@@ -86,10 +114,42 @@ void ACS_CubeProjectile::BeginPlay()
 	// 米 → 厘米
 	MaxTravelDistance = MaxTravelDistanceMeters * 100.f;
 
-	MeshComponent->SetRelativeScale3D(FVector(CubeSize / 100.f));
+	// 保险：确保组件是 Movable（蓝图可能把 Mobility 改回 Static）
+	if (CollisionComponent)
+	{
+		CollisionComponent->SetMobility(EComponentMobility::Movable);
+	}
+	if (MeshComponent)
+	{
+		MeshComponent->SetMobility(EComponentMobility::Movable);
+	}
 
-	// 碰撞球放大到 2 倍：高速飞行时擦边也能检测到
-	CollisionComponent->SetSphereRadius(CubeSize * 0.5f * 2.0f);
+	// ---------- 尺寸由 CubeSize 控制 ----------
+	// 引擎内置 Cube 边长 100cm，缩放 = CubeSize/100 时视觉边长等于 CubeSize。
+	// 会覆盖蓝图里设置的网格缩放。
+	SetMeshRelativeScale(FVector(CubeSize / 100.f));
+
+	// ---------- 应用颜色 ----------
+	// 用引擎自带的 BasicShapeMaterial（带 Color 参数），
+	// 不用为每种方块单独创建材质资产。
+	if (bUseCubeColor && MeshComponent)
+	{
+		UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+
+		if (BaseMat)
+		{
+			// 创建动态材质实例，这样可以按方块改颜色而不影响其他方块
+			UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(BaseMat, this);
+			if (DynMat)
+			{
+				DynMat->SetVectorParameterValue(TEXT("Color"), CubeColor);
+				MeshComponent->SetMaterial(0, DynMat);
+			}
+		}
+	}
+
+	// 碰撞球大小已在 SetMeshRelativeScale 中随网格同步设置
 
 	ProjectileMovement->MaxSpeed = InitialSpeed + 1.f;
 	ProjectileMovement->ProjectileGravityScale = GravityScale;
@@ -426,6 +486,9 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 
 		bIsPushingEnemy = true;
 		PushedEnemy = Enemy;
+
+		// 子类扩展点：施加各自的特殊效果（灼烧 / 感电 / 减速等）
+		OnEnemyHitEffect(Enemy);
 
 		// ---------- 让方块穿透这个敌人 ----------
 		// 注意：IgnoreActorWhenMoving 在 OnHit 回调里调用已经太晚，

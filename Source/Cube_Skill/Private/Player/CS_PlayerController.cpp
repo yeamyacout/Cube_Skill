@@ -5,7 +5,10 @@
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "InputAction.h"
 #include "InputActionValue.h"
+#include "InputMappingContext.h"
+#include "InputCoreTypes.h"
 #include "GameFramework/Character.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
@@ -38,6 +41,117 @@ void ACS_PlayerController::SetupInputComponent()
 	//   Triggered：按住期间每帧都触发 -> 一次点击可能连发多颗
 	//   Started  ：只在按下的瞬间触发一次 -> 正好符合"点一下扔一个"
 	EnhancedInputComponent->BindAction(PrimaryAction, ETriggerEvent::Started, this, &ACS_PlayerController::Primary);
+
+	// ---------- 数字键 1/2/3 切换方块类型 ----------
+	// 运行时动态创建 InputAction 并绑定到数字键，
+	// 省去在编辑器里手工创建 IA_Switch1/2/3 资产。
+	struct FSwitchKeyBinding
+	{
+		const TCHAR* ActionName;
+		FKey Key;
+		void (ACS_PlayerController::*Func)();
+	};
+
+	const FSwitchKeyBinding Bindings[] =
+	{
+		{ TEXT("IA_SwitchCube1"), EKeys::One, &ACS_PlayerController::SelectType1 },
+		{ TEXT("IA_SwitchCube2"), EKeys::Two, &ACS_PlayerController::SelectType2 },
+		{ TEXT("IA_SwitchCube3"), EKeys::Three, &ACS_PlayerController::SelectType3 },
+		{ TEXT("IA_ToggleCube"), EKeys::T, &ACS_PlayerController::ToggleDefaultProjectile },
+	};
+
+	for (const FSwitchKeyBinding& Binding : Bindings)
+	{
+		UInputAction* Action = NewObject<UInputAction>(this, Binding.ActionName);
+		Action->ValueType = EInputActionValueType::Boolean;
+
+		// 每次按键触发一次
+		EnhancedInputComponent->BindAction(Action, ETriggerEvent::Started, this, Binding.Func);
+
+		// 直接给默认 InputMappingContext 加上这个按键映射
+		for (UInputMappingContext* IMC : InputMappingContexts)
+		{
+			if (IsValid(IMC))
+			{
+				IMC->MapKey(Action, Binding.Key);
+			}
+		}
+	}
+}
+
+
+void ACS_PlayerController::SelectProjectileType(int32 Index)
+{
+	if (SwitchableProjectiles.IsValidIndex(Index))
+	{
+		CurrentProjectileIndex = Index;
+		LastSpecialProjectileIndex = Index;
+		bUsingDefaultProjectile = false;
+	}
+}
+
+
+void ACS_PlayerController::ToggleDefaultProjectile()
+{
+	// 在「初始方块」与「上次特殊方块」之间来回切换
+	if (bUsingDefaultProjectile)
+	{
+		// 当前是初始方块 -> 切回上次的特殊方块
+		if (SwitchableProjectiles.IsValidIndex(LastSpecialProjectileIndex))
+		{
+			CurrentProjectileIndex = LastSpecialProjectileIndex;
+			bUsingDefaultProjectile = false;
+		}
+	}
+	else
+	{
+		// 当前是特殊方块 -> 切回初始方块
+		LastSpecialProjectileIndex = CurrentProjectileIndex;
+		CurrentProjectileIndex = -1;
+		bUsingDefaultProjectile = true;
+	}
+}
+
+
+void ACS_PlayerController::SelectType1()
+{
+	SelectProjectileType(0);
+}
+
+
+void ACS_PlayerController::SelectType2()
+{
+	SelectProjectileType(1);
+}
+
+
+void ACS_PlayerController::SelectType3()
+{
+	SelectProjectileType(2);
+}
+
+
+TSubclassOf<ACS_CubeProjectile> ACS_PlayerController::GetActiveProjectileClass() const
+{
+	// 初始方块状态：用 DefaultProjectileClass（白色）
+	if (bUsingDefaultProjectile)
+	{
+		if (DefaultProjectileClass)
+		{
+			return DefaultProjectileClass;
+		}
+		return ProjectileClass;
+	}
+
+	// 特殊方块：用切换列表
+	if (SwitchableProjectiles.IsValidIndex(CurrentProjectileIndex))
+	{
+		if (UClass* Cls = SwitchableProjectiles[CurrentProjectileIndex])
+		{
+			return Cls;
+		}
+	}
+	return ProjectileClass;
 }
 
 void ACS_PlayerController::Jump()
@@ -284,37 +398,7 @@ void ACS_PlayerController::SpawnProjectile()
 		LaunchDirection,
 		MyCharacter,
 		MyCharacter,
-		ProjectileClass);
-
-	// 记录当前方块，用于"只能存在一个"的判断
-	if (IsValid(NewProjectile))
-	{
-		ActiveProjectile = NewProjectile;
-
-		// ---------- 贴脸敌人：直接命中 ----------
-		// 发射前的探测如果发现前方很近处有敌人，
-		// 这里立刻对方块下"命中"指令，绕过物理碰撞。
-		if (ACS_EnemyCharacter* NearEnemy = PendingNearbyEnemy.Get())
-		{
-			NewProjectile->HitEnemyImmediately(NearEnemy, CameraForward);
-		}
-	}
-
-	// 用完即清，避免影响下一次发射
-	PendingNearbyEnemy = nullptr;
-}
-
-
-bool ACS_PlayerController::HasActiveProjectile() const
-{
-	return ActiveProjectile.IsValid() && IsValid(ActiveProjectile.Get());
-}
-
-
-ACS_CubeProjectile* ACS_PlayerController::GetActiveProjectile() const
-{
-	return ActiveProjectile.Get();
-}
+		GetActiveProjectileClass());   // 按当前选中的方块类型生成
 
 	// 记录当前方块，用于"只能存在一个"的判断
 	if (IsValid(NewProjectile))

@@ -119,6 +119,15 @@ protected:
 	/** 命中敌人：推敌 + 停住 + 延迟回收 */
 	void ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVector& PushDir);
 
+	/**
+	 * 命中敌人时的额外效果钩子（子类覆写）
+	 *
+	 * 基类只负责推开敌人；火焰/雷电/自然等子类
+	 * 可以覆写这个函数来施加各自的特殊效果
+	 * （灼烧 DoT、溅射伤害、减速等）。
+	 */
+	virtual void OnEnemyHitEffect(ACS_EnemyCharacter* Enemy) {}
+
 	/** 停止推动 */
 	void StopEnemyPush();
 
@@ -149,9 +158,28 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Movement", meta = (ClampMin = "0.0"))
 	float GravityScale = 0.f;
 
-	/** 立方体边长（cm） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Visual", meta = (ClampMin = "1.0"))
+	/**
+	 * 立方体尺寸（cm）
+	 *
+	 * 视觉大小与碰撞大小都由这一个值控制：
+	 *   网格缩放 = CubeSize / 100
+	 *   碰撞球半径 = CubeSize
+	 *
+	 * 150 = 1.5 米见方。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Visual", meta = (ClampMin = "10.0", Units = "cm"))
 	float CubeSize = 150.f;
+
+	/** 方块颜色（默认白色；子类可覆写默认值） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Visual")
+	FLinearColor CubeColor = FLinearColor::White;
+
+	/** 是否把 CubeColor 应用到网格材质 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Visual")
+	bool bUseCubeColor = true;
+
+	/** 设置网格相对缩放（同时同步碰撞球大小） */
+	void SetMeshRelativeScale(const FVector& NewScale);
 
 	// ---------- 回收 ----------
 
