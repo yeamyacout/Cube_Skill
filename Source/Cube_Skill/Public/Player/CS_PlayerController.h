@@ -11,6 +11,7 @@ struct FInputActionValue;
 class UInputAction;
 class UInputMappingContext;
 class ACS_CubeProjectile;
+class UCS_CubeRotationComponent;
 class ACS_EnemyCharacter;
 /**
  * 
@@ -150,3 +151,5 @@ private:
 	
 	
 };
+
+

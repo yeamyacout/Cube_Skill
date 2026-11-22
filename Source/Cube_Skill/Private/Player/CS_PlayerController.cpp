@@ -315,3 +315,34 @@ ACS_CubeProjectile* ACS_PlayerController::GetActiveProjectile() const
 {
 	return ActiveProjectile.Get();
 }
+
+	// 记录当前方块，用于"只能存在一个"的判断
+	if (IsValid(NewProjectile))
+	{
+		ActiveProjectile = NewProjectile;
+
+		// ---------- 贴脸敌人：直接命中 ----------
+		// 发射前的探测如果发现前方很近处有敌人，
+		// 这里立刻对方块下"命中"指令，绕过物理碰撞。
+		if (ACS_EnemyCharacter* NearEnemy = PendingNearbyEnemy.Get())
+		{
+			NewProjectile->HitEnemyImmediately(NearEnemy, CameraForward);
+		}
+	}
+
+	// 用完即清，避免影响下一次发射
+	PendingNearbyEnemy = nullptr;
+}
+
+
+bool ACS_PlayerController::HasActiveProjectile() const
+{
+	return ActiveProjectile.IsValid() && IsValid(ActiveProjectile.Get());
+}
+
+
+ACS_CubeProjectile* ACS_PlayerController::GetActiveProjectile() const
+{
+	return ActiveProjectile.Get();
+}
+
