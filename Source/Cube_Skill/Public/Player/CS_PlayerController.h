@@ -11,6 +11,7 @@ struct FInputActionValue;
 class UInputAction;
 class UInputMappingContext;
 class ACS_CubeProjectile;
+class UCS_CubeRotationComponent;
 class ACS_EnemyCharacter;
 /**
  * 
@@ -38,6 +39,14 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
 	TObjectPtr<UInputAction> PrimaryAction;
+
+	/** E：把方块向右翻 90° */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> FlipRightAction;
+
+	/** Q：把方块向前翻 90° */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> FlipForwardAction;
 
 	/**
 	 * 左键发射的方块类
@@ -147,6 +156,22 @@ private:
 	void Move(const FInputActionValue &Value);
 	void Look(const FInputActionValue &Value);
 	void Primary();
+
+	/** E：让当前 Pawn 上的翻转组件向右翻 */
+	void FlipRight();
+
+	/** Q：让当前 Pawn 上的翻转组件向前翻 */
+	void FlipForward();
+
+	/**
+	 * 取当前 Pawn 上的方块翻转组件
+	 *
+	 * 控制器只做输入转发，不持有组件、也不负责渲染；
+	 * 组件挂在角色上（蓝图里 Add Component），这里按类型找。
+	 * 找不到（还没挂）时返回 nullptr，调用方直接忽略这次按键。
+	 */
+	UCS_CubeRotationComponent* GetCubeRotation() const;
 	
 	
 };
+

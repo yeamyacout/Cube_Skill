@@ -6,6 +6,7 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
+#include "Components/CS_CubeRotationComponent.h"
 #include "GameFramework/Character.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimInstance.h"
@@ -38,6 +39,22 @@ void ACS_PlayerController::SetupInputComponent()
 	//   Triggered：按住期间每帧都触发 -> 一次点击可能连发多颗
 	//   Started  ：只在按下的瞬间触发一次 -> 正好符合"点一下扔一个"
 	EnhancedInputComponent->BindAction(PrimaryAction, ETriggerEvent::Started, this, &ACS_PlayerController::Primary);
+
+	// E / Q：翻转方块。
+	//
+	// 加上 IsValid 保护：IA 资产还没建、或 BP 里没指过来时，直接跳过绑定。
+	// UEnhancedInputComponent::BindAction 收到空指针会触发断言，不能裸调。
+	//
+	// 用 Started 而不是 Triggered：按住只翻一次，符合"按一下转 90°"。
+	if (IsValid(FlipRightAction))
+	{
+		EnhancedInputComponent->BindAction(FlipRightAction, ETriggerEvent::Started, this, &ACS_PlayerController::FlipRight);
+	}
+
+	if (IsValid(FlipForwardAction))
+	{
+		EnhancedInputComponent->BindAction(FlipForwardAction, ETriggerEvent::Started, this, &ACS_PlayerController::FlipForward);
+	}
 }
 
 void ACS_PlayerController::Jump()
@@ -314,4 +331,30 @@ bool ACS_PlayerController::HasActiveProjectile() const
 ACS_CubeProjectile* ACS_PlayerController::GetActiveProjectile() const
 {
 	return ActiveProjectile.Get();
+}
+
+// ==================== 方块翻转 ====================
+
+UCS_CubeRotationComponent* ACS_PlayerController::GetCubeRotation() const
+{
+	// 组件由角色自己持有（蓝图里 Add Component），控制器只按类型取用。
+	// 没挂时返回 nullptr，按键被忽略——这是预期行为，不是错误。
+	const APawn* ControlledPawn = GetPawn();
+	return ControlledPawn ? ControlledPawn->FindComponentByClass<UCS_CubeRotationComponent>() : nullptr;
+}
+
+void ACS_PlayerController::FlipRight()
+{
+	if (UCS_CubeRotationComponent* CubeRotation = GetCubeRotation())
+	{
+		CubeRotation->FlipRight();
+	}
+}
+
+void ACS_PlayerController::FlipForward()
+{
+	if (UCS_CubeRotationComponent* CubeRotation = GetCubeRotation())
+	{
+		CubeRotation->FlipForward();
+	}
 }
