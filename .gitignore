@@ -98,3 +98,6 @@ Docs/
 
 # 临时备份目录
 .enemy_backup_*/
+
+# AI Skill 目录（本地工具配置，不上传）
+.claude/
