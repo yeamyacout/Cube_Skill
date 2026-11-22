@@ -205,13 +205,29 @@ void ACS_CubeProjectile::ApplyLaunchVelocity()
 	AlreadyHitEnemies.Reset();
 
 	// 应用「是否可以有碰撞」开关
-	// 关闭时保留 Query（Overlap 敌人检测仍可用），但关闭物理阻挡
 	if (CollisionComponent)
 	{
-		CollisionComponent->SetCollisionEnabled(
-			bEnableCollisionDetection
-				? ECollisionEnabled::QueryAndPhysics
-				: ECollisionEnabled::QueryOnly);
+		if (bEnableCollisionDetection)
+		{
+			// 正常：物理碰撞 + 查询
+			CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			CollisionComponent->SetCollisionResponseToAllChannels(ECR_Block);
+			CollisionComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+			CollisionComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+		}
+		else
+		{
+			// 穿透模式：
+			//   用 QueryOnly + 全部 Overlap —— 扫掠时不再阻挡（能穿过去），
+			//   但 Overlap 查询仍然有效（球形检测敌人依然生效）。
+			//
+			// 注意：不能只改成 QueryOnly 而不改响应，
+			// 因为 Block 响应在 QueryOnly 下仍会让移动组件被挡住。
+			CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			CollisionComponent->SetCollisionResponseToAllChannels(ECR_Overlap);
+			CollisionComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+			CollisionComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+		}
 	}
 
 	const FVector LaunchVel = PendingLaunchDirection * InitialSpeed;
@@ -384,7 +400,12 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 	// 推力方向严格投影到水平面，敌人只沿此方向后退
 	LockedPushDirection = FVector(PushDir.X, PushDir.Y, 0.f).GetSafeNormal();
 
-	// 「是否可以弹开敌人」关闭时，跳过推敌部分，但仍执行碰撞与回收
+	// 记录撞击时的飞行速度，用于穿透后恢复
+	const FVector PreservedVelocity = ProjectileMovement
+		? ProjectileMovement->Velocity
+		: PendingLaunchDirection * InitialSpeed;
+
+	// 「是否可以弹开敌人」关闭时，跳过推敌部分
 	const bool bShouldPush = bEnableEnemyKnockback && !LockedPushDirection.IsNearlyZero();
 
 	if (bShouldPush)
@@ -406,6 +427,10 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 		bIsPushingEnemy = true;
 		PushedEnemy = Enemy;
 
+		// ---------- 让方块穿透这个敌人 ----------
+		// 注意：IgnoreActorWhenMoving 在 OnHit 回调里调用已经太晚，
+		// 物理扫掠在回调之前就完成了碰撞判定，方块这一帧已被挡住。
+		// 但下一帧开始生效，配合下面的"恢复速度"就能穿过去。
 		CollisionComponent->IgnoreActorWhenMoving(Enemy, true);
 
 		if (UWorld* World = GetWorld())
@@ -424,79 +449,22 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 		}
 	}
 
-	// 方块转刚体：弹开 + 翻滚
-	if (bEnablePhysicsOnImpact)
+	// ---------- 方块继续向前飞行（穿透）----------
+	//
+	// 撞到敌人不转物理、不停住、不回收，
+	// 只把速度恢复成撞击前的值，让方块继续沿原方向飞。
+	// 配合上面的 IgnoreActorWhenMoving，下一帧起就不会再被该敌人挡住。
+	if (ProjectileMovement)
 	{
-		// 先从敌人身体里挪出来，避免两者互相挤压
-		const FVector AwayFromEnemy =
-			(GetActorLocation() - Enemy->GetActorLocation()).GetSafeNormal();
-		if (!AwayFromEnemy.IsNearlyZero())
+		// 若方块已经因为碰撞被清速，这里恢复
+		if (PreservedVelocity.SizeSquared() > 1.f)
 		{
-			SetActorLocation(GetActorLocation() + AwayFromEnemy * 30.f, false);
+			RestartMovement(PreservedVelocity);
 		}
-
-		// 法线取飞行方向反方向，方块沿原路弹回
-		FHitResult SimulatedHit;
-		SimulatedHit.ImpactNormal = -LockedPushDirection;
-		SimulatedHit.Location = GetActorLocation();
-
-		SwitchToPhysicsOnImpact(SimulatedHit, /*bIsEnemyImpact=*/true);
-	}
-	else if (ProjectileMovement)
-	{
-		ProjectileMovement->Velocity = FVector::ZeroVector;
-		ProjectileMovement->UpdateComponentVelocity();
 	}
 
-	// 延迟回收
-	if (!bHasCollided && !bIsReturning)
-	{
-		bHasCollided = true;
-		bIsFlying = false;
-		SetState(ECSProjectileState::Blocked);
-
-		if (UWorld* World = GetWorld())
-		{
-			World->GetTimerManager().SetTimer(
-				RecallDelayTimerHandle, this,
-				&ACS_CubeProjectile::HandleRecallDelayFinished,
-				EnemyHitRecallDelay, false);
-		}
-		else
-		{
-			HandleRecallDelayFinished();
-		}
-	}
-	else if (bIsReturning)
-	{
-		// 已经在回收途中又撞到敌人（例如超距回收时飞行中撞上）：
-		// 此时 bIsReturning 已为 true，上面的延迟回收不会执行，
-		// 而方块刚被转成物理模式（移动组件已停），会卡在原地再也飞不回来。
-		//
-		// 处理：先标记碰撞，再重置回收流程 —— 取消当前回收、等待片刻重新开始。
-		bHasCollided = true;
-		bIsFlying = false;
-
-		if (UWorld* World = GetWorld())
-		{
-			// 停掉旧的回收推进
-			World->GetTimerManager().ClearTimer(RecallCheckTimerHandle);
-
-			// 重置回收状态，让下一次 StartRecall 能正常启动
-			bIsReturning = false;
-			State = ECSProjectileState::Blocked;
-
-			World->GetTimerManager().SetTimer(
-				RecallDelayTimerHandle, this,
-				&ACS_CubeProjectile::HandleRecallDelayFinished,
-				EnemyHitRecallDelay, false);
-		}
-		else
-		{
-			bIsReturning = false;
-			HandleRecallDelayFinished();
-		}
-	}
+	// 只把敌人记为"已命中"，方块本身保持 Flying 状态
+	// 不设置 bHasCollided，不切换状态，不启动回收
 }
 
 
@@ -782,12 +750,22 @@ void ACS_CubeProjectile::StartRecall(float ReturnSpeed)
 		ProjectileMovement->HomingTargetComponent = TargetRoot;
 	}
 
-	// ---------- 回收阶段：保持阻挡，不能穿过物体 ----------
-	// 方块会被墙挡住，但因为开启了 Homing，它每帧都在朝玩家加速，
-	// 所以会贴着墙滑动，玩家绕过墙角后就能飞出来。
-	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-	CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
-	CollisionComponent->SetCollisionResponseToChannel(ECC_Destructible, ECR_Block);
+	// ---------- 回收阶段碰撞设置 ----------
+	if (bEnableCollisionDetection)
+	{
+		// 正常模式：保持阻挡，方块会被墙挡住，
+		// 但 Homing 每帧朝玩家加速，所以会贴着墙滑动绕回来。
+		CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+		CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+		CollisionComponent->SetCollisionResponseToChannel(ECC_Destructible, ECR_Block);
+	}
+	else
+	{
+		// 穿透模式：回收也保持穿透，直接穿墙飞回玩家，避免卡在墙里。
+		CollisionComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
+		CollisionComponent->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+		CollisionComponent->SetCollisionResponseToChannel(ECC_Destructible, ECR_Overlap);
+	}
 
 	SetState(ECSProjectileState::Returning);
 
