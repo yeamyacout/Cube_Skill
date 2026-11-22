@@ -266,6 +266,26 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.01"))
 	float EnemyDetectInterval = 0.03f;
 
+	// ---------- 核心行为开关（蓝图可调） ----------
+
+	/**
+	 * 是否可以有碰撞
+	 *
+	 * 关闭后：方块不与任何物体发生物理碰撞，OnComponentHit 不再触发。
+	 * 用途：做穿透类玩法（穿墙弹、穿透射击）。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Switches")
+	bool bEnableCollisionDetection = true;
+
+	/**
+	 * 是否可以弹开敌人
+	 *
+	 * 关闭后：撞到敌人不再推动对方，方块仍照常处理碰撞与回收。
+	 * 用途：做"仅命中不击退"的变体方块。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Switches")
+	bool bEnableEnemyKnockback = true;
+
 	// ---------- 碰撞转物理 ----------
 
 	/** 碰撞后是否转为真刚体（弹开 + 翻滚 + 滚动） */

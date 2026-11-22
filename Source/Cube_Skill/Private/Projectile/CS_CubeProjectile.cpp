@@ -204,6 +204,16 @@ void ACS_CubeProjectile::ApplyLaunchVelocity()
 	bSwitchedToPhysics = false;
 	AlreadyHitEnemies.Reset();
 
+	// 应用「是否可以有碰撞」开关
+	// 关闭时保留 Query（Overlap 敌人检测仍可用），但关闭物理阻挡
+	if (CollisionComponent)
+	{
+		CollisionComponent->SetCollisionEnabled(
+			bEnableCollisionDetection
+				? ECollisionEnabled::QueryAndPhysics
+				: ECollisionEnabled::QueryOnly);
+	}
+
 	const FVector LaunchVel = PendingLaunchDirection * InitialSpeed;
 
 	ProjectileMovement->MaxSpeed = InitialSpeed + 1.f;
@@ -374,7 +384,10 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 	// 推力方向严格投影到水平面，敌人只沿此方向后退
 	LockedPushDirection = FVector(PushDir.X, PushDir.Y, 0.f).GetSafeNormal();
 
-	if (!LockedPushDirection.IsNearlyZero())
+	// 「是否可以弹开敌人」关闭时，跳过推敌部分，但仍执行碰撞与回收
+	const bool bShouldPush = bEnableEnemyKnockback && !LockedPushDirection.IsNearlyZero();
+
+	if (bShouldPush)
 	{
 		if (bIsPushingEnemy)
 		{
