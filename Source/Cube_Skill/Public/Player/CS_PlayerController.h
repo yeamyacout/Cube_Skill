@@ -52,6 +52,10 @@ private:
 	
 	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
 	TObjectPtr<UInputAction> BeginCubeAction;
+
+	/** F 键：瞬移到雷电方块位置（仅雷电方块有效） */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Ability")
+	TObjectPtr<UInputAction> TeleportAction;
 	
 	/**
 	 * 左键发射的方块类
@@ -115,6 +119,9 @@ private:
 
 	/** T 键：在初始方块与上次特殊方块之间切换 */
 	void ToggleDefaultProjectile();
+
+	/** F 键：瞬移到雷电方块位置 */
+	void Teleport();
 
 	/** 取得当前应使用的方块类 */
 	TSubclassOf<ACS_CubeProjectile> GetActiveProjectileClass() const;

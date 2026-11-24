@@ -43,6 +43,9 @@ void ACS_PlayerController::SetupInputComponent()
 	EnhancedInputComponent->BindAction(LightCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::SelectType2);
 	EnhancedInputComponent->BindAction(NatchCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::SelectType3);
 	EnhancedInputComponent->BindAction(BeginCubeAction, ETriggerEvent::Started, this, &ACS_PlayerController::ToggleDefaultProjectile);
+
+	// F 键：瞬移到雷电方块位置
+	EnhancedInputComponent->BindAction(TeleportAction, ETriggerEvent::Started, this, &ACS_PlayerController::Teleport);
 	
 	// 左键发射：必须用 Started 而不是 Triggered。
 	//   Triggered：按住期间每帧都触发 -> 一次点击可能连发多颗
@@ -85,13 +88,24 @@ void ACS_PlayerController::ToggleDefaultProjectile()
 }
 
 
-void ACS_PlayerController::SelectType1()
+void ACS_PlayerController::Teleport()
 {
-	SelectProjectileType(0);
+	// F 键：仅当场上方块是雷电方块时生效
+	ACS_CubeProjectile* Cube = ActiveProjectile.Get();
+	if (!IsValid(Cube) || !Cube->SupportsTeleport())
+	{
+		return;
+	}
+
+	// 调用方块的瞬移逻辑（内部会处理路径闪电、路径伤害和玩家位移）
+	Cube->ExecuteTeleport();
 }
 
 
-void ACS_PlayerController::SelectType2()
+void ACS_PlayerController::SelectType1()
+{
+	SelectProjectileType(0);
+}void ACS_PlayerController::SelectType2()
 {
 	SelectProjectileType(1);
 }

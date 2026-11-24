@@ -468,6 +468,11 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 	// 「是否可以弹开敌人」关闭时，跳过推敌部分
 	const bool bShouldPush = bEnableEnemyKnockback && !LockedPushDirection.IsNearlyZero();
 
+	// 子类扩展点：施加各自的特殊效果（灼烧 / 感电 / 减速等）
+	// 必须放在推敌逻辑之外 —— 雷电方块关闭了击退，
+	// 若放在 if 块内会导致范围伤害与命中特效完全不触发。
+	OnEnemyHitEffect(Enemy);
+
 	if (bShouldPush)
 	{
 		if (bIsPushingEnemy)
@@ -486,9 +491,6 @@ void ACS_CubeProjectile::ProcessEnemyHit(ACS_EnemyCharacter* Enemy, const FVecto
 
 		bIsPushingEnemy = true;
 		PushedEnemy = Enemy;
-
-		// 子类扩展点：施加各自的特殊效果（灼烧 / 感电 / 减速等）
-		OnEnemyHitEffect(Enemy);
 
 		// ---------- 让方块穿透这个敌人 ----------
 		// 注意：IgnoreActorWhenMoving 在 OnHit 回调里调用已经太晚，
