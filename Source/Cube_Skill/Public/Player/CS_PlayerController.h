@@ -218,6 +218,29 @@ private:
 	void Primary();
 	
 	
+
+public:
+	// ============================================================
+	//  方块翻转（E = 右翻，Q = 前翻）
+	// ============================================================
+
+	/** E：方块向右翻 90°；蓝图里可覆盖默认 IA */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Cube")
+	TObjectPtr<UInputAction> FlipRightAction;
+
+	/** Q：方块向前翻 90°；蓝图里可覆盖默认 IA */
+	UPROPERTY(EditDefaultsOnly, Category = "CS|Input|Cube")
+	TObjectPtr<UInputAction> FlipForwardAction;
+
+	UFUNCTION(BlueprintCallable, Category = "CS|Cube")
+	void FlipRight();
+
+	UFUNCTION(BlueprintCallable, Category = "CS|Cube")
+	void FlipForward();
+
+	/** 取得角色身上的方块翻转组件（未挂时返回空，按键被忽略） */
+	UFUNCTION(BlueprintPure, Category = "CS|Cube")
+	UCS_CubeRotationComponent* GetCubeRotation() const;
 };
 
 
