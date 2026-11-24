@@ -15,6 +15,7 @@
 #include "Projectile/CS_CubeProjectile.h"
 #include "Characters/CS_EnemyCharacter.h"
 #include "Engine/World.h"
+#include "Components/CS_CubeRotationComponent.h"
 
 void ACS_PlayerController::SetupInputComponent()
 {
@@ -51,6 +52,26 @@ void ACS_PlayerController::SetupInputComponent()
 	//   Triggered：按住期间每帧都触发 -> 一次点击可能连发多颗
 	//   Started  ：只在按下的瞬间触发一次 -> 正好符合"点一下扔一个"
 	EnhancedInputComponent->BindAction(PrimaryAction, ETriggerEvent::Started, this, &ACS_PlayerController::Primary);
+	// ---------- 方块翻转 ----------
+	// IA 资产路径写死只是兜底：蓝图里配了 FlipRightAction / FlipForwardAction 就以蓝图为准。
+	if (!IsValid(FlipRightAction))
+	{
+		FlipRightAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Player/Input/IA_FlipRight.IA_FlipRight"));
+	}
+	if (!IsValid(FlipForwardAction))
+	{
+		FlipForwardAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Player/Input/IA_FlipForward.IA_FlipForward"));
+	}
+
+	if (IsValid(FlipRightAction))
+	{
+		EnhancedInputComponent->BindAction(FlipRightAction, ETriggerEvent::Started, this, &ACS_PlayerController::FlipRight);
+	}
+	if (IsValid(FlipForwardAction))
+	{
+		EnhancedInputComponent->BindAction(FlipForwardAction, ETriggerEvent::Started, this, &ACS_PlayerController::FlipForward);
+	}
+
 
 }
 
@@ -416,3 +437,28 @@ ACS_CubeProjectile* ACS_PlayerController::GetActiveProjectile() const
 	return ActiveProjectile.Get();
 }
 
+// ==================== 方块翻转 ====================
+
+UCS_CubeRotationComponent* ACS_PlayerController::GetCubeRotation() const
+{
+	// 组件由角色自己持有（蓝图里 Add Component），控制器只按类型取用。
+	// 没挂时返回 nullptr，按键被忽略——这是预期行为，不是错误。
+	const APawn* ControlledPawn = GetPawn();
+	return ControlledPawn ? ControlledPawn->FindComponentByClass<UCS_CubeRotationComponent>() : nullptr;
+}
+
+void ACS_PlayerController::FlipRight()
+{
+	if (UCS_CubeRotationComponent* CubeRotation = GetCubeRotation())
+	{
+		CubeRotation->FlipRight();
+	}
+}
+
+void ACS_PlayerController::FlipForward()
+{
+	if (UCS_CubeRotationComponent* CubeRotation = GetCubeRotation())
+	{
+		CubeRotation->FlipForward();
+	}
+}
