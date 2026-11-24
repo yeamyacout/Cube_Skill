@@ -128,6 +128,14 @@ protected:
 	 */
 	virtual void OnEnemyHitEffect(ACS_EnemyCharacter* Enemy) {}
 
+public:
+	/** 是否支持瞬移（雷电方块返回 true，供 F 键判断） */
+	virtual bool SupportsTeleport() const { return false; }
+
+	/** 执行瞬移（基类空实现，雷电方块覆写） */
+	virtual bool ExecuteTeleport() { return false; }
+
+protected:
 	/** 停止推动 */
 	void StopEnemyPush();
 
