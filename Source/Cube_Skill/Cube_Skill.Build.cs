@@ -16,6 +16,7 @@ public class Cube_Skill : ModuleRules
 			"InputCore", 
 			"EnhancedInput", 
 			"AIModule",
+			"NavigationSystem",
 			"GameplayTasks",
 			"GameplayAbilities",
 			"GameplayTags",

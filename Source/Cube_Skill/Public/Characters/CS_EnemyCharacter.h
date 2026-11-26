@@ -7,6 +7,7 @@
 #include "CS_EnemyCharacter.generated.h"
 
 class UCS_AbilitySystemComponent;
+class UCS_HealthComponent;
 class UAbilitySystemComponent;
 class UGameplayAbility;
 
@@ -21,6 +22,9 @@ public:
 	UAbilitySystemComponent* GetAbilitySystemComponent() const;
 
 	virtual void Tick(float DeltaSeconds) override;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CS|Health")
+	TObjectPtr<UCS_HealthComponent> HealthComponent;
 
 	/**
 	 * 开始"被击飞"状态

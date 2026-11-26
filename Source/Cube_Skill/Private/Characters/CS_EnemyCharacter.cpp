@@ -7,7 +7,9 @@
 #include "BrainComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
+#include "Components/CS_HealthComponent.h"
 #include "GAS/Abilities/CS_AbilitySystemComponent.h"
+#include "GAS/Abilities/CS_HitReact.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 
@@ -17,6 +19,8 @@ ACS_EnemyCharacter::ACS_EnemyCharacter()
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
 	
+	HealthComponent = CreateDefaultSubobject<UCS_HealthComponent>(TEXT("HealthComponent"));
+
 	CS_AbilitySystemComponent = CreateDefaultSubobject<UCS_AbilitySystemComponent>("CS_AbilitySystemComponent");
 	//设置是否可以复制
 	CS_AbilitySystemComponent->SetIsReplicated(true);
@@ -50,10 +54,22 @@ void ACS_EnemyCharacter::GiveStartupAbilities()
 	if(!IsValid(GetAbilitySystemComponent())) return;
 
 	//循环将技能列表的每个技能 赋予Ability Ability再将技能变成能力规范的形式，最后再将修改后的形式给GAS
+	bool bHasHitReact = false;
 	for(const auto& Ability : StartupAbilities)
 	{
+		if (Ability && Ability->IsChildOf(UCS_HitReact::StaticClass()))
+		{
+			bHasHitReact = true;
+		}
 		FGameplayAbilitySpec AbilitySpec = FGameplayAbilitySpec(Ability);
 		GetAbilitySystemComponent()->GiveAbility(AbilitySpec);
+	}
+
+	// 列表里没有受击技能时补上原生类。开局由 ActivateOnGiven 激活。
+	// 若蓝图子类已经放进 StartupAbilities，就不再给第二次。
+	if (!bHasHitReact)
+	{
+		GetAbilitySystemComponent()->GiveAbility(FGameplayAbilitySpec(UCS_HitReact::StaticClass()));
 	}
 }
 
@@ -188,6 +204,12 @@ void ACS_EnemyCharacter::EndKnockback()
 	// 清除速度覆盖
 	bUseKnockbackVelocityOverride = false;
 	KnockbackVelocityOverride = FVector::ZeroVector;
+
+	// 已经死亡时不要把行为树和移动输入开回来，否则击飞超时会把尸体重新拉起来。
+	if (HealthComponent && HealthComponent->IsDead())
+	{
+		return;
+	}
 
 	// 恢复 AI 的移动输入
 	if (AController* Ctrl = GetController())
