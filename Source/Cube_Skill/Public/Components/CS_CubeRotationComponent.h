@@ -16,13 +16,13 @@ UENUM(BlueprintType)
 enum class ECS_CubeFaceGroup : uint8
 {
 	/** 占据本地 ±Z（顶面 / 底面） */
-	UpDown      UMETA(DisplayName = "上下"),
+	UpDown      UMETA(DisplayName = "Up-Down"),
 
 	/** 占据本地 ±X（正面 / 背面） */
-	FrontBack   UMETA(DisplayName = "前后"),
+	FrontBack   UMETA(DisplayName = "Front-Back"),
 
 	/** 占据本地 ±Y（右面 / 左面） */
-	LeftRight   UMETA(DisplayName = "左右")
+	LeftRight   UMETA(DisplayName = "Left-Right")
 };
 
 /**
@@ -34,13 +34,13 @@ UENUM(BlueprintType)
 enum class ECS_CubeSlot : uint8
 {
 	/** +Z 上 */
-	Up      UMETA(DisplayName = "上(+Z)"),
+	Up      UMETA(DisplayName = "Up (+Z)"),
 
 	/** +Y 右 */
-	Right   UMETA(DisplayName = "右(+Y)"),
+	Right   UMETA(DisplayName = "Right (+Y)"),
 
 	/** +X 前 */
-	Front   UMETA(DisplayName = "前(+X)")
+	Front   UMETA(DisplayName = "Front (+X)")
 };
 
 /** 逻辑朝向发生变化时广播（按下瞬间就触发，不等动画） */

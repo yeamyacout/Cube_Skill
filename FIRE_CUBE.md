@@ -1,9 +1,8 @@
 # 火焰方块设计规格
 
-> **范围**：火焰方块本体——占用面组、发射轴、双侧火舌、按间隔的火焰直接伤害、碰敌自动收回、命中后挂「火焰属性 / 火星」。
-> **不包含**：联动效果（火+雷=爆炸、火+自然=灼烧）、玩家侧属性效果、火星特效/材质、UI 选中与变色。这些由属性系统、联动系统、表现层各自负责；本文只定义它们的**接口与触发点**。
-> **依赖**：`CUBE_ROTATION.md` 的面组数据层（提供发射轴）；属性系统（提供属性挂载）。
-> **状态**：待评审。需你确认的条目集中在第 9 节。
+> **范围**：火焰方块本体 + 可复用的单侧火舌 Actor。
+> **不包含**：联动效果（火+雷=爆炸、火+自然=灼烧）、玩家侧属性效果、火焰 / 火星特效、UI。
+> **状态**：已落地（2026-11-24），编译通过；属性系统与联动仍未接入。
 
 ---
 
@@ -12,72 +11,74 @@
 | 术语 | 含义 |
 | --- | --- |
 | 初始方块 | `ACS_CubeProjectile`，被投掷的基础方块本体 |
-| 子类方块 | 初始方块的元素变体（火焰 / 雷劈 / 自然），带额外行为 |
+| 火焰方块 | `ACS_FireCubeProjectile : ACS_CubeProjectile` |
 | 面组 | 一对相对面（上下 / 左右 / 前后）；同一组两面完全相同 |
-| 火焰面组 | 火焰方块固定占用的面组，默认「上下」 |
-| 发射面 | 火焰面组的两面都是喷口，沿轴双侧同时喷 |
-| 火焰属性 | 挂在 Actor 上的临时标记，有持续时间，由属性系统维护 |
-| 火星 | 火焰属性在敌人身上的表现挂点；本阶段只留事件/挂点，特效后续做 |
-| 联动 | 两种属性同时存在时触发的效果（爆炸 / 灼烧 / 导电） |
+| 火焰轴 | 火焰面组当前的世界轴向，决定两条火舌的喷射方向 |
+| 火舌 | `ACS_FlameTongue`，一条单侧火焰判定体（一个 Actor） |
+| 火焰属性 | 挂在 Actor 上的临时标记，由属性系统维护（当前未接入） |
+| 火星 | 火焰属性在敌人身上的表现挂点，不带玩法 |
+| 联动 | 两种属性同时存在时触发的效果（爆炸 / 灼烧 / 导电），当前不处理 |
 
 ---
 
-## 1. 需求与定位
+## 1. 定位与边界
 
 ### 1.1 需求来源
 
-- **图 1（总树）**：初始方块有三个开关（是否碰到物体进入模拟物理 / 是否有碰撞 / 是否可以弹开敌人）；子类方块有三件事——选中时颜色改变、发射的时候挂子特效、给敌人身上挂属性；火焰分支为「发射火焰（相对面发射）→ 撞到敌人保留火焰 → 敌人造成火焰 DOT 伤害」。
-- **图 2（联动）**：火焰方块 → 爆炸 / 灼烧；雷电方块 → 爆炸 / 导电；自然方块 → 灼烧 / 导电；中央节点「属性如果给到玩家就触发不同的效果」。
-- **群聊**：先做伤害和特效；属性附加统一由一个人写，避免各写各的「出入」。
+- 图 1：初始方块三个开关；子类方块「选中变色 / 发射挂子特效 / 给敌人挂属性」；火焰分支「发射火焰（相对面发射）→ 撞到敌人保留火焰 → 火焰 DOT」。
+- 图 2：火焰方块 → 爆炸 / 灼烧；雷电 → 爆炸 / 导电；自然 → 灼烧 / 导电；「属性给到玩家触发不同效果」。
+- 群聊：先做伤害和特效；属性附加统一由一个人写。
 
-### 1.2 本阶段边界
+### 1.2 当前实现范围
 
-当前只做火焰方块本体，**所有联动效果都不处理**，因此：
+已实现：
 
-- 不实现火焰 DOT（灼烧）；
-- 不实现爆炸与连锁；
-- 不实现玩家侧属性效果；
-- 不做火星 / 火焰特效。
+- 火焰方块固定占用「上下」面组，沿该面组当前轴的双侧各生成一条火舌；
+- 火舌按 `DamageInterval` 检测，范围内敌人结算火焰伤害；敌人只需要进入范围；
+- 命中后广播「火焰属性 / 火星」事件，并打 `LogCS_Fire` 日志；
+- 方块本体不推敌、不进入模拟物理（两个开关固定关闭）；
+- 命中 / 收回完全沿用基类，火焰侧不覆写。
 
-> 本阶段完成后：
-> - 方块本体碰到敌人 → **自动收回，不推敌、不造成伤害**；
-> - 双侧火舌按 `DamageInterval` 对范围内敌人造成火焰直接伤害，**进入范围就受伤**；
-> - 敌人被火舌命中后挂「火焰属性」，表现层在敌人身上挂火星；
-> - 不会触发 DOT / 爆炸 / 连锁——这些是联动效果，要等联动系统接上。
+未实现：
+
+- 火焰属性的存储、刷新、移除（属性系统未定）；
+- 灼烧 DOT、爆炸、连锁、导电、中毒、减速等联动；
+- 玩家侧属性效果；
+- 火舌 / 火星特效（由 `BP_FlameTongue` 与表现层负责）。
 
 ### 1.3 职责边界
 
 | 模块 | 负责 | 不负责 |
 | --- | --- | --- |
-| **火焰方块（本文）** | 占面组、算发射轴、双侧火舌判定、按间隔的火焰直接伤害、碰敌自动收回、请求挂火焰属性、广播火星挂点 | 属性的存续 / 联动反应 / DOT 伤害 / 火星特效 |
-| 旋转数据层 | 提供 `GetFaceAxis(UpDown)` | 火焰判定 |
-| 属性系统 | 火焰属性的添加 / 刷新 / 移除 / 查询；玩家侧差异 | 谁触发、何时触发 |
-| 联动系统 | 火+雷 / 火+自然 / 雷+自然 的结算 | 属性挂载 |
-| 表现层 | 选中变色、喷火 / 命中 / 火星特效 | 判定 |
-| UI | 显示方块与面组颜色 | 方向计算 |
-
-「选中变色」「发射挂子特效」「火星特效」属于表现层；火焰方块只广播事件与挂点，不负责放特效。
+| 火焰方块 | 算轴、生成 / 销毁火舌、转发事件、关两个开关 | 属性存续、联动结算、命中收回（基类） |
+| 火舌 Actor | 单条范围判定、按间隔伤害、`OnFlameHit` | 属性系统、视觉 |
+| 基类 | 飞行、碰撞、命中、收回 | 火焰判定 |
+| 属性系统 | 火焰属性 / 火星的存续与刷新（未接入） | 谁触发 |
+| 联动系统 | 火+雷 / 火+自然 / 雷+自然（未实现） | 属性挂载 |
+| 表现层 | 选中变色、火舌 / 火星 Niagara | 判定 |
+| UI | 方块与面组颜色 | 方向计算 |
 
 ---
 
-## 2. 面组与发射方向
+## 2. 面组与方向
 
 ### 2.1 占用面组
 
-火焰固定占用「上下」组（±Z），两面都是火焰面。默认参数 `FireGroup = UpDown`；以后要换面组只改参数，不改逻辑。
+火焰固定占用「上下」组（±Z），两面都是火焰面。等旋转数据层的 `GetFaceAxis(UpDown)` 就绪后，直接用它替换回退逻辑。
 
-### 2.2 方向与轴
+### 2.2 方向的唯一来源
 
 ```cpp
-const EAxis::Type FireAxis = GetFaceAxis(FireGroup);   // 火焰面组当前占的轴：X / Y / Z
-const FVector N = AxisToUnitVector(FireAxis);          // 单位轴
-const FVector SprayDirs[2] = { N, -N };                // 双侧同时喷
+// 有覆盖值时用覆盖值（控制器 / 旋转系统设置）
+// 否则取方块世界 +Z 的主轴，保证结果是 ±X / ±Y / ±Z
+FVector FireAxis = FireAxisOverride.IsNearlyZero()
+    ? SnapToDominantAxis(GetActorUpVector())
+    : FireAxisOverride.GetSafeNormal();
 ```
 
-- 直接读 `CUBE_ROTATION.md` 1.3 的 `GetFaceAxis`，**不另存一套朝向**；
-- 因为两面完全相同、且决定双侧喷火，**不需要区分正负**，轴就够；
-- 旋转方块（E / Q）后立即生效，不等待 UI 动画、不做插值；
-- 取值只可能是 X / Y / Z 三根轴之一（90° 整数旋转，无浮点误差）。
+- 当前 HEAD 没有旋转组件，所以先用「方块上轴 + `SetFireAxisOverride`」兜底；
+- 旋转系统就绪后，控制器在发射前把 `GetFaceAxis(UpDown)` 传给 `SetFireAxisOverride` 即可，火焰侧不用改；
+- 取值只可能是 ±X / ±Y / ±Z 之一（90° 整数旋转，无浮点误差）。
 
 ### 2.3 六种姿态下的火焰轴向
 
@@ -90,99 +91,102 @@ const FVector SprayDirs[2] = { N, -N };                // 双侧同时喷
 | S4 | E → Q | +Y | 左右 |
 | S5 | Q | +X | 前后 |
 
-> 火焰沿该轴的两个方向同时喷出（如 S0 为上下双向）。表中不需要正负号，这正是选双侧的好处：与「两面完全相同」一致，也不依赖数据层区分正负。
+> 双侧喷火，表中只关心轴，不需要正负号。
 
 ---
 
-## 3. 行为流程
+## 3. 行为
 
 ### 3.1 总览
 
 ```text
-选中火焰 → 投掷 → 方块飞行 + 双侧喷火 → 范围内敌人按间隔受伤 + 挂火星 → 方块碰到敌人 → 自动收回
+选中火焰 → 投掷 → 方块飞行 + 生成两条火舌 → 范围内敌人按间隔受伤 + 火星事件 → 基类收回
 ```
 
-投掷 / 回收流程沿用初始方块，但「碰敌」的后果改为自动收回。
-
-### 3.2 投掷与碰敌
+### 3.2 投掷与命中
 
 - 由 `ACS_PlayerController` 的左键 → 攻击蒙太奇 → `OnAttackThrowNotify` 生成，与初始方块相同；
-- 生成时方块的世界朝向决定 `FireAxis`，进而决定两条火舌的方向；
-- **碰到敌人 → 立即 `StartRecall()`**：不推敌、不穿透、不停留；
-- 身体判定沿用基类的球形 Overlap（`EnemyDetectRadius`，默认 220cm）；命中后只触发收回，不做击退；
-- 碰撞转物理、撞墙等逻辑仍由基类处理（开关可调）。
-
-### 3.3 喷火形态（已定：随方块移动的双侧火舌）
-
-- 判定体：以方块中心为起点，沿 `FireAxis` 的 **+、- 两个方向各生成一个**胶囊 / 盒体，长度 `SprayLength`、半径 `SprayRadius`，挂在方块上随机体移动；
-- 检测：每 `DamageInterval`（默认 0.25s）对两个判定体各做一次 Overlap；
-- 伤害：检测时在范围内的**每个敌人**各结算一次 `FlameDamage`；敌人只需要进入范围，不要求碰到方块，也不做视线 / 遮挡检测；
-- 同一敌人在范围内会按间隔**持续受伤**，离开范围立即停止；
-- 喷火时长 `SprayDuration`（默认 1.0s），或到收回为止；收回后默认停止喷火（`bSprayWhileReturning` 可放开）。
-
-> 选双侧的理由：与旋转设计「同一组两面完全相同」一致；数据层只给轴、不给正负，双侧天然不需要符号。
-
-### 3.4 伤害与属性
-
-- **伤害归属**：火焰方块的伤害来自火焰，不是方块。方块本体（碰撞）不结算伤害；火舌结算火焰直接伤害，`DamageCauser` 记为火焰（不是方块碰撞）。实现阶段用独立火焰 Actor 还是火焰组件都可以，但归因必须能区分「火焰伤害」和「方块碰撞」。
-- **伤害节奏**：每 `DamageInterval` 检测一次，范围内每个敌人结算一次 `FlameDamage`；**间隔与伤害都可在蓝图里调**。同一个敌人在本次投掷里允许多次受伤（每次检测结算一次），不做「一次投掷只打一次」的限制。
-- **伤害类型**：记为「火焰」，供后续抗性 / 免疫使用。
-- 挂属性请求（属性系统未定，火焰只依赖这组语义）：
+- 火焰方块在构造和 `BeginPlay` 里强制：
 
 ```cpp
-// 实现方待定；火焰方块只调用，不关心内部
-ApplyElement(Target, ECS_Element::Fire, Source, /*Duration=*/6.f, /*bRefresh=*/true);
-bool HasElement(Target, ECS_Element::Fire);
+bEnablePhysicsOnImpact = false;   // 进入模拟物理
+bEnableEnemyKnockback = false;    // 是否弹开敌人
 ```
 
-- 属性：某个敌人**第一次被火舌伤害**时挂「火焰属性」，之后每次命中刷新时长；默认 6s、不叠层，叠层上限 `MaxStacks` 预留。
-- 火星：挂火焰属性的同时广播 `OnEmberAttached(Target)`；表现层据此在敌人身上挂火星，**生命周期与火焰属性一致**。火星本阶段不带任何玩法效果（不加伤害、不加层数）。
-- 属性系统不存在 / 调用失败：记录 `LogCS_Fire` 日志，伤害照常结算、流程不中断（方便联调）。
+- **命中后的收回 / 穿透完全由基类决定**，火焰侧不覆写 `ProcessEnemyHit`、不调用 `StartRecall`；
+- 当前基类代码撞敌是穿透继续飞；如果基类侧以后改成「命中收回」，火焰侧无需改动。
+
+### 3.3 火舌（已定：一个 Actor = 一条单侧火舌）
+
+- 方块在 `BeginPlay` 生成 **两条** `ACS_FlameTongue`：
+  - 方向 `+FireAxis` 与 `-FireAxis`；
+  - 生成点 = 方块中心 ± `FlameMuzzleOffset`（0 时自动取 `CubeSize / 2`），从方块表面喷出；
+  - 两条都 `AttachToActor(方块)`，跟随方块移动。
+- 每条火舌：
+  - 本地 `+X` 为喷射方向，喷口在 Actor 原点；
+  - 一个胶囊作几何体（`NoCollision`），每 `DamageInterval` 用 `OverlapMultiByObjectType(ECC_Pawn)` 查一次；
+  - 检测到的 `ACS_EnemyCharacter` 结算 `FlameDamage`，`DamageCauser = 火舌`；
+  - 同一条火舌内，同一敌人每跳只结算一次（`TSet` 去重）。
+- 喷火时长 `Duration`（<= 0 表示一直喷到外部停）；方块进入 `Returning / Recalled` 时停止（`bSprayWhileReturning` 可放开），方块销毁时一并销毁。
+
+### 3.4 伤害、属性与火星
+
+- **伤害归属**：方块本体不结算伤害；伤害由火舌结算，`DamageCauser` 是火舌 Actor，不是方块碰撞。
+- **伤害节奏**：每 `DamageInterval` 对范围内每个敌人结算一次 `FlameDamage`；间隔与伤害都可在蓝图里调。
+- **命中事件**：`OnFireHit(Enemy, bFirstHit, Damage)`；同一敌人第一次被本次投掷命中时 `bFirstHit = true`。
+- **属性 / 火星**：每次命中广播 `OnEmberAttached(Enemy, bFirstHit)`；表现层据此挂 / 刷新火星。属性系统就绪后，在 `ApplyFireAttribute` 里替换成真正的 `ApplyElement` 调用。
+- **日志**：`LogCS_Fire` 输出命中、首次标记、`AttributeDuration`，方便联调。
+- 属性系统不存在时：只打日志，伤害照常结算，不崩溃。
 
 ### 3.5 方块本体
 
-- 继承初始方块的三个开关；火焰方块把「是否可以弹开敌人」**固定为关闭**（`bEnableEnemyKnockback = false`），碰撞 / 模拟物理按基类；
-- 碰到敌人只做一件事：`StartRecall()`；
-- 方块本体不结算伤害，伤害全部由火舌结算；
-- 收回时清两个火舌判定体与 timer。
+- 只改两个开关：`bEnablePhysicsOnImpact = false`、`bEnableEnemyKnockback = false`；
+- 其余（碰撞、飞行、命中、收回）全部沿用基类；
+- 方块本体不结算伤害；收回时销毁两条火舌。
 
 ---
 
-## 4. 与初始方块 / 基类的关系
+## 4. 代码关系
 
-- 新增 `ACS_FireCubeProjectile : ACS_CubeProjectile`。
-- 基类新增两个 `protected virtual` 钩子（空实现，非破坏性）：
+### 4.1 `ACS_FlameTongue`（`Source/.../Public/Actor/CS_FlameTongue.h`）
 
-```cpp
-virtual void OnEnemyHit(ACS_EnemyCharacter* Enemy, const FVector& PushDir);
-virtual void OnSurfaceHit(const FHitResult& Hit);
-```
+- 一个 Actor = 一条单侧火舌，不依赖 `ACS_FireCubeProjectile`，可被陷阱 / 武器 / Boss 复用；
+- 对外：`InitFlameTongue(Source, Instigator, Direction, Settings)`、`SetDirection`、`StartFlame`、`StopFlame`、`OnFlameHit`；
+- 视觉：C++ 只有胶囊判定；`BP_FlameTongue` 子类挂 Niagara / 音效；
+- 参数：`FCSFlameTongueSettings`（间隔、伤害、长度、半径、持续、属性时长）。
 
-  火焰子类覆写 `OnEnemyHit`：不推敌，直接 `StartRecall()`。
-- 火焰方块在构造函数里把 `bEnableEnemyKnockback` 置 false；基类的推敌分支自然跳过。
-- 火舌判定不复用基类的 `CheckNearbyEnemies`（那是方块本体检测，火舌是独立判定体）。
-- 蓝图子类 `BP_FireCubeProjectile` 负责资源 / 参数，控制器 `ProjectileClass` 指向它。
+### 4.2 `ACS_FireCubeProjectile`（`Source/.../Public/Projectile/CS_FireCubeProjectile.h`）
+
+- 继承 `ACS_CubeProjectile`，只新增火舌生成 / 销毁 / 事件转发；
+- 不覆写基类的命中 / 收回；
+- 生成两条火舌（±轴），`FlameTongueClass` 为空时用 C++ 的 `ACS_FlameTongue`；
+- 基类进入 `Returning / Recalled` 时停火；`EndPlay` 销毁两条火舌。
+
+### 4.3 与基类钩子的关系
+
+- 基类的 `OnEnemyHitEffect` 是给雷劈 / 自然方块用的；火焰**不使用**它；
+- 火焰的伤害由独立火舌结算，和方块的命中流程解耦；
+- 基类已有的 `bEnablePhysicsOnImpact`、`bEnableEnemyKnockback` 由火焰子类关闭。
 
 ---
 
-## 5. 参数（全部蓝图可调）
+## 5. 参数（全部蓝图可调，数值由你调）
 
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `FireGroup` | `UpDown` | 火焰占用的面组 |
-| `SprayDuration` | 1.0s | 单次喷火持续时间 |
-| `SprayLength` | 500cm | 单侧火舌长度 |
-| `SprayRadius` | 120cm | 火舌半径 |
-| `DamageInterval` | 0.25s | 检测 / 伤害间隔 |
-| `FlameDamage` | 10 | 每次检测的单次火焰伤害（非 DOT；数值待定） |
-| `AttributeDuration` | 6s | 火焰属性持续时间 |
-| `bRefreshAttribute` | true | 重复命中刷新时长 |
-| `MaxStacks` | 1 | 叠层上限（预留） |
-| `bSprayWhileReturning` | false | 收回期间是否继续喷火 |
-| `bEnableEnemyKnockback` | **false** | 火焰方块固定不推敌 |
-| 基类其余开关 | 同初始方块 | 碰撞 / 模拟物理 |
+| 参数 | 说明 |
+| --- | --- |
+| `FlameTongueClass` | 火舌类；建议指向 `BP_FlameTongue` |
+| `FlameSettings.DamageInterval` | 伤害检测间隔 |
+| `FlameSettings.FlameDamage` | 每次检测的单次火焰伤害 |
+| `FlameSettings.Length` | 单条火舌长度（cm） |
+| `FlameSettings.Radius` | 火舌半径（cm） |
+| `FlameSettings.Duration` | 单次喷火持续时间；<= 0 表示一直喷到停 |
+| `FlameSettings.AttributeDuration` | 火焰属性 / 火星持续时间 |
+| `FlameMuzzleOffset` | 火舌生成点离方块中心的距离；0 = 自动取 `CubeSize / 2` |
+| `bSprayWhileReturning` | 收回期间是否继续喷火 |
+| `bEnablePhysicsOnImpact` | **固定 false** |
+| `bEnableEnemyKnockback` | **固定 false** |
 
-> 伤害只由火舌结算，方块本体不造成伤害；「敌人进入范围」即可受伤，不要求碰到方块。
+> 伤害只由火舌结算，方块本体不造成伤害；敌人进入范围即可受伤。
 
 ---
 
@@ -191,16 +195,16 @@ virtual void OnSurfaceHit(const FHitResult& Hit);
 | 名称 | 方向 | 用途 |
 | --- | --- | --- |
 | `GetFireAxis()` | 输出 | 当前火焰轴（UI / 调试 / 特效） |
-| `OnFireSprayStarted` | 广播 | 喷火开始（表现层挂特效） |
-| `OnFireHit(Enemy, bFirstHit)` | 广播 | 每次火舌伤害（首次 / 后续） |
-| `OnEmberAttached(Enemy)` | 广播 | 火星挂点（表现层） |
-| `OnAutoRecallStarted` | 广播 | 碰敌自动收回 |
-| `ApplyElement(...)` | 调用 | 请求属性系统挂火焰 |
-| `GetFaceAxis(Group)` | 调用 | 从旋转数据层取轴 |
+| `SetFireAxisOverride(Axis)` | 调用 | 旋转系统 / 控制器设置火焰轴，并同步已有火舌 |
+| `OnFireSprayStarted` | 广播 | 两条火舌生成并开始喷火 |
+| `OnFireHit(Enemy, bFirstHit, Damage)` | 广播 | 每次火舌伤害 |
+| `OnEmberAttached(Enemy, bFirstHit)` | 广播 | 火星挂点 / 刷新（表现层） |
+| `ACS_FlameTongue::OnFlameHit(Enemy, bFirstHit, Damage)` | 广播 | 单条火舌的命中，可单独复用 |
+| `ApplyElement(...)` | 调用 | 属性系统接入点（待定） |
 
 ---
 
-## 7. 联动对照表（只记录，不实现）
+## 7. 联动对照表（只记录，当前不实现）
 
 | 已有属性 | 新属性 | 联动 | 来源 |
 | --- | --- | --- | --- |
@@ -211,51 +215,43 @@ virtual void OnSurfaceHit(const FHitResult& Hit);
 | 火 | 自然 | 灼烧 | 图 2 |
 | 雷 | 自然 | 导电 | 图 2 |
 
-> 这张表是从图 2 的箭头反推的**待确认**结论：火 + 雷 = 爆炸，火 + 自然 = 灼烧，雷 + 自然 = 导电。
-> 火焰方块只负责把「火焰属性」挂上去；谁和谁反应、怎么结算、是否连锁，全部在联动系统。
-> 玩家侧：同一套属性挂在玩家身上；「给玩家触发不同效果」的具体效果未定（第 9 节问题 6）。
+> 火焰方块只负责广播火焰属性 / 火星事件；反应由联动系统单独做。
 
 ---
 
-## 8. 验收标准与测试用例（实现后）
+## 8. 验收标准与测试用例
 
 | # | 用例 | 预期 |
 | --- | --- | --- |
-| 1 | 六种姿态读轴 | `FireAxis` 与 `GetFaceAxis` 一致 |
-| 2 | 敌人进入火舌范围 | 按 `DamageInterval` 持续掉 `FlameDamage`，离开即停止 |
-| 3 | 调间隔 / 伤害参数 | 下一次检测立即生效 |
-| 4 | 方块碰敌 | 自动收回，不推敌，不造成伤害 |
-| 5 | 方块本体不伤敌 | 碰撞本身无伤害；伤害只来自火舌 |
-| 6 | 火星挂点 | 首次伤害触发 `OnEmberAttached`，持续与火焰属性一致 |
-| 7 | 双侧火舌 | 轴的两侧都能命中 |
-| 8 | 收回清理 | 两个判定体销毁，timer 清理，无残留 |
-| 9 | 关闭基类开关 | 与初始方块行为一致 |
-| 10 | 编译 | 0 error |
+| 1 | 编译 | `Result: Succeeded`（2026-11-24 已通过） |
+| 2 | 投掷 | 生成两条火舌，方向 ± 火焰轴，跟随方块 |
+| 3 | 进入范围 | 按 `DamageInterval` 持续掉 `FlameDamage`，离开停止 |
+| 4 | 参数调整 | 改间隔 / 伤害 / 长度后下一跳生效 |
+| 5 | 重复命中 | `OnFireHit` / `OnEmberAttached` 照常广播，`bFirstHit` 只在首次为 true |
+| 6 | 收回 | 火舌停止，方块销毁时一并销毁，无残留 timer |
+| 7 | 两个开关 | 不推敌、撞墙不转刚体（走基类 Blocked → 收回） |
+| 8 | 本体伤害 | 方块碰撞本身不造成伤害；伤害只来自火舌 |
 
 ---
 
 ## 9. 待确认
 
-1. **伤害节奏**：`DamageInterval` 默认 0.25s、`FlameDamage` 默认 10 是否合适？归因用独立火焰 Actor 还是火焰组件？
-2. **火星语义**：火星只是火焰属性的表现挂点（当前按这个写），还是需要带玩法（例如叠层、额外伤害）？
-3. **自动收回**：碰敌立即收回，还是给一个短延迟（默认 0，参数可调）？收回后火舌立即停，是否符合？
-4. **火焰属性**：默认 6s、刷新不叠层，是否符合？
-5. **属性系统归属**：`ApplyElement / HasElement` 由谁实现？本文签名是否可用？
-6. **玩家侧效果**：火焰属性给玩家触发什么？（先留接口与事件）
-7. **联动矩阵**：第 7 节的「火 + 雷 = 爆炸 / 火 + 自然 = 灼烧 / 雷 + 自然 = 导电」是否正确？
+1. **属性系统归属**：`ApplyElement / HasElement` 由谁实现？当前 `ApplyFireAttribute` 只打日志。
+2. **玩家侧效果**：火焰属性给玩家触发什么？（先留接口与事件）
+3. **联动矩阵**：第 7 节的「火 + 雷 = 爆炸 / 火 + 自然 = 灼烧 / 雷 + 自然 = 导电」是否正确？
+4. **自动收回**：当前基类撞敌是穿透继续飞；如果基类侧要改成命中收回，需要基类负责人确认。
 
 ---
 
 ## 10. 风险与依赖
 
-- **旋转数据层缺失**：当前 HEAD 没有 `CS_CubeRotationComponent`（提交 `fe289f9` 回退过），`CUBE_ROTATION.md` 只是工作区未跟踪文档。火焰方向依赖它，联调前需要恢复或重写。
-- **自动收回缩短输出窗口**：碰敌即收回，火舌可能只打到 1~2 次；如果手感不对，用收回延迟 / `SprayDuration` 调，不要改判定频率硬凑。
-- **火星生命周期**：火星跟随火焰属性，属性刷新/过期时火星必须同步，否则会出现「火灭了火星还在」。
-- **属性系统未定**：用第 3.4 节的契约隔离；实现方接口不同时只改适配层。
-- **伤害归因**：方块碰撞与火舌伤害分离，避免击杀统计 / 仇恨 / 日志把两种伤害混在一起。
-- **资源冲突**：只新增 `Content/Projectile/Fire/`，不改 `BP_CubeProjectile` 等公共 `.uasset`。
-- **无头验证**：逻辑可自动化；火焰 / 火星观感必须在编辑器里验收。
-- **性能**：0.25s 一次 Overlap，长度 / 半径可调；避免每帧检测。
+- **旋转数据层缺失**：当前 HEAD 没有 `CS_CubeRotationComponent`，火焰轴先取方块上轴；旋转层就绪后通过 `SetFireAxisOverride` 接入，火焰侧不改。
+- **基类命中行为**：当前基类撞敌是穿透继续飞，不主动收回；如果预期是「命中收回」，属于基类侧改动。
+- **BP 旧属性**：`BP_FireCube` 里可能还留着 `BurnTotalDamage / BurnDuration / BurnTickInterval`，重编译蓝图会清掉。
+- **火舌视觉**：C++ 没有网格 / Niagara；需要在 `BP_FlameTongue` 里挂。
+- **伤害归因**：`DamageCauser = 火舌`；击杀统计如果按 Causer 找玩家，需要改用 Instigator 或额外标记。
+- **性能**：每次投掷生成两个火舌 Actor；每个火舌一个 timer。火墙数量多时再考虑对象池。
+- **构建环境**：编译前必须关 UnrealEditor；UBT 需要写 `%LOCALAPPDATA%\UnrealBuildTool`，在受限沙箱下要放行。
 
 ---
 
@@ -263,4 +259,22 @@ virtual void OnSurfaceHit(const FHitResult& Hit);
 
 - 面组枚举、槽位、`GetFaceAxis` 直接复用；
 - 火焰只读 Slots，不写，不引入第二套朝向；
-- 若旋转层后续把「轴 + 符号」拆开，火焰仍只调 `GetFaceAxis`，接口不变。
+- 旋转层就绪前用 `GetActorUpVector()` 主轴 + `SetFireAxisOverride` 兜底。
+
+---
+
+## 附录 B：BP 接线与测试步骤
+
+1. 打开项目，新建 Blueprint Class，父类选 `ACS_FlameTongue`，命名 `BP_FlameTongue`（放在 `Content/Projectile/` 或 `Content/Actor/`）；
+2. 在 `BP_FlameTongue` 里加 Niagara / 音效；可把 Niagara 挂在 Root 下；
+3. 打开 `BP_FireCube`：
+   - 把 `FlameTongueClass` 指向 `BP_FlameTongue`；
+   - 调 `FlameSettings`（间隔 / 伤害 / 长度 / 半径 / 持续）；
+   - 重编译蓝图，清掉旧的 Burn 参数；
+4. PIE 测试：
+   - 丢出火焰方块，观察两条火舌；
+   - 敌人进入范围，看 `LogCS_Fire` 与血条；
+   - 走远 / 撞墙触发收回，确认火舌停止、没有残留；
+   - 调 `bSprayWhileReturning`，确认收回期间是否继续喷。
+
+> 如果暂时不建 `BP_FlameTongue`，`FlameTongueClass` 留空会用 C++ 的 `ACS_FlameTongue`，逻辑能跑，但没有视觉。
