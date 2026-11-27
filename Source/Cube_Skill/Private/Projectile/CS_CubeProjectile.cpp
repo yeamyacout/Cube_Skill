@@ -331,7 +331,18 @@ void ACS_CubeProjectile::ApplyLaunchVelocity()
 
 void ACS_CubeProjectile::CheckNearbyEnemies()
 {
-	if (bIsReturning || State == ECSProjectileState::Recalled)
+	// 已销毁/已回收完毕就彻底停掉
+	if (State == ECSProjectileState::Recalled)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+		}
+		return;
+	}
+
+	// 回收飞行途中：默认停止检测，但 bDetectEnemiesWhileReturning 开启时继续检测
+	if (bIsReturning && !bDetectEnemiesWhileReturning)
 	{
 		if (UWorld* World = GetWorld())
 		{
@@ -367,10 +378,28 @@ void ACS_CubeProjectile::CheckNearbyEnemies()
 		return;
 	}
 
+	// Overlap 对同一个敌人会返回多条结果（敌人有多个碰撞体），
+	// 必须先去重，否则一次检测会对同一敌人重复命中 N 次
+	// （表现为"敌人一直受攻击 + 特效刷屏"）。
+	TSet<ACS_EnemyCharacter*> UniqueEnemies;
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
-		ACS_EnemyCharacter* Enemy = Cast<ACS_EnemyCharacter>(Overlap.GetActor());
-		if (!Enemy || AlreadyHitEnemies.Contains(Enemy))
+		if (ACS_EnemyCharacter* Found = Cast<ACS_EnemyCharacter>(Overlap.GetActor()))
+		{
+			UniqueEnemies.Add(Found);
+		}
+	}
+
+	for (ACS_EnemyCharacter* Enemy : UniqueEnemies)
+	{
+		if (!Enemy)
+		{
+			continue;
+		}
+
+		// 去重：默认同一敌人只命中一次；
+		// bAllowRepeatEnemyHit 开启后，每轮检测都会重新命中（但每轮只命中一次）。
+		if (!bAllowRepeatEnemyHit && AlreadyHitEnemies.Contains(Enemy))
 		{
 			continue;
 		}
@@ -386,7 +415,12 @@ void ACS_CubeProjectile::CheckNearbyEnemies()
 
 		AlreadyHitEnemies.Add(Enemy);
 		ProcessEnemyHit(Enemy, PushDir);
-		break;
+
+		// 允许重复命中时不再 break，一轮处理范围内全部敌人
+		if (!bAllowRepeatEnemyHit)
+		{
+			break;
+		}
 	}
 }
 
@@ -771,7 +805,13 @@ void ACS_CubeProjectile::StartRecall(float ReturnSpeed)
 	{
 		World->GetTimerManager().ClearTimer(RecallDelayTimerHandle);
 		World->GetTimerManager().ClearTimer(DistanceCheckTimerHandle);
-		World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+
+		// 敌人检测定时器：只有不开回收检测时才清掉，
+		// 否则回收途中会失去检测能力（bDetectEnemiesWhileReturning 开启时保留）。
+		if (!bDetectEnemiesWhileReturning)
+		{
+			World->GetTimerManager().ClearTimer(EnemyDetectTimerHandle);
+		}
 	}
 
 	StopEnemyPush();

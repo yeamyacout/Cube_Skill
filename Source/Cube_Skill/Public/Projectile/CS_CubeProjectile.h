@@ -237,27 +237,6 @@ protected:
 
 	// ---------- 卡死兜底 ----------
 
-	/**
-	 * 发射后多久开始接受"靠近回收"（秒）
-	 *
-	 * 方块发射后经过这段时间，玩家走近到一定距离内就会触发回收。
-	 * 限制时间是为了避免刚发射时玩家本来就在旁边，方块立刻被召回。
-	 *
-	 * 2 秒。
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0"))
-	float MinTimeBeforeCloseRecall = 2.f;
-
-	/**
-	 * 靠近回收的触发距离（cm）
-	 *
-	 * 发射超过 MinTimeBeforeCloseRecall 秒后，
-	 * 方块与玩家距离小于这个值就强制回收。
-	 *
-	 * 100cm = 1 米。
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0", Units = "cm"))
-	float CloseProximityDistance = 100.f;
 
 /** 卡死判定距离（cm）：离玩家很近 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|Recall", meta = (ClampMin = "0.0", Units = "cm"))
@@ -286,10 +265,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
 	float EnemyPushDuration = 0.5f;
 
-	/** 撞敌人后延迟回收（秒） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
-	float EnemyHitRecallDelay = 0.5f;
-
 	/** 敌人 AI 锁定时长（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.0"))
 	float EnemyKnockbackLockTime = 3.f;
@@ -301,6 +276,24 @@ protected:
 	/** 敌人检测间隔（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit", meta = (ClampMin = "0.01"))
 	float EnemyDetectInterval = 0.03f;
+
+	/**
+	 * 回收过程中是否继续检测敌人
+	 *
+	 * 关闭时（默认）：方块开始回收就停止敌人检测。
+	 * 开启时：回收飞行途中也按 EnemyDetectInterval 持续检测并命中敌人。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit")
+	bool bDetectEnemiesWhileReturning = false;
+
+	/**
+	 * 是否允许同一敌人重复命中
+	 *
+	 * 关闭时（默认）：一次发射中同一敌人只命中一次。
+	 * 开启时：每次检测到都会重新命中并造成伤害。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|Projectile|EnemyHit")
+	bool bAllowRepeatEnemyHit = false;
 
 	// ---------- 核心行为开关（蓝图可调） ----------
 

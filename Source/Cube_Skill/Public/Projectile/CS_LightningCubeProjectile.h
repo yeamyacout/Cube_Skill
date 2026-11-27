@@ -3,8 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Projectile/CS_CubeProjectile.h"
 #include "NiagaraSystem.h"
+#include "Projectile/CS_CubeProjectile.h"
 #include "CS_LightningCubeProjectile.generated.h"
 
 class ACS_EnemyCharacter;
@@ -13,15 +13,16 @@ class UNiagaraComponent;
 /**
  * 雷电方块
  *
- * 特点：
- *   · 无碰撞：飞行途中穿过一切物体
- *   · 球形范围伤害：范围内所有敌人受伤
- *   · 特殊技能（F 键）：玩家瞬移到方块位置，路径留下闪电并伤害沿途敌人
+ * 战斗机制：
+ *   · 无碰撞，飞行途中穿过一切物体
+ *   · 每 0.5 秒扫描一次周围敌人，范围内的每个敌人各受一次伤害并在其身上生成雷电特效
+ *   · 回收途中继续保持扫描，方块会"电着回来"
+ *   · 按 F 冲刺：锁定方块位置，玩家瞬移过去，路径留下闪电并伤害沿途敌人
  *
- * 特效：
- *   · NS_Absorption_Yellow —— 发射后以方块为中心，回收时销毁
- *   · NS_Lightning_01b    —— 瞬移路径闪电，长度等于路径长度
- *   · NS_Lightning_01a    —— 命中范围内的敌人时，对该敌人生成
+ * 三套特效（均可在蓝图替换）：
+ *   · NS_Absorption_Yellow  飞行光环，挂在方块上随其移动
+ *   · NS_Lightning_01b      冲刺路径闪电，长度 = 实际冲刺距离
+ *   · NS_EnemyHit_Lightning 命中敌人时的特效，挂在敌人身上跟随
  */
 UCLASS()
 class CUBE_SKILL_API ACS_LightningCubeProjectile : public ACS_CubeProjectile
@@ -32,155 +33,132 @@ public:
 	ACS_LightningCubeProjectile();
 
 	/**
-	 * 执行瞬移：把玩家移动到方块位置，路径生成闪电并伤害沿途敌人
+	 * 执行冲刺：玩家瞬移到方块位置，路径生成闪电并伤害沿途敌人
 	 *
-	 * 由 PlayerController 在按下 F 键时调用（仅当方块是雷电方块）。
-	 * @return 是否成功执行
+	 * 由 PlayerController 在按下 F 键时调用。
+	 * 目标点会先做胶囊扫掠，撞墙则截断在墙前，防止穿墙或飞出地图。
+	 * @return 是否成功执行（每次发射只能成功一次）
 	 */
 	virtual bool ExecuteTeleport() override;
 
-	/** 是否是雷电方块（供 PlayerController 判断 F 键是否生效） */
+	/** 标记为可冲刺方块，供 PlayerController 判断 F 键是否生效 */
 	virtual bool SupportsTeleport() const override { return true; }
 
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	/** 命中敌人时造成球形范围伤害 */
+	/**
+	 * 对单个敌人施加伤害并生成命中特效
+	 *
+	 * 基类 CheckNearbyEnemies 已按 EnemyDetectRadius 完成范围扫描，
+	 * 每扫到一个敌人就会调用一次本函数，因此这里无需再做范围检测。
+	 */
 	virtual void OnEnemyHitEffect(ACS_EnemyCharacter* Enemy) override;
 
-	/** 范围内敌人受到伤害，并生成命中特效 */
-	void DamageEnemiesInRadius(const FVector& Center);
-
-	/** 在指定位置生成一次性特效 */
-	void SpawnBurstEffect(UNiagaraSystem* System, const FVector& Location) const;
-
-	/** 在敌人身上生成命中雷电特效（身体中心 + 头顶） */
+	/** 把命中特效挂到敌人身上，并按配置设置大小、朝向、持续时间 */
 	void SpawnEnemyHitEffects(ACS_EnemyCharacter* Enemy);
 
-	// ---------- 伤害参数 ----------
+	// ---------- 伤害 ----------
 
-	/** 雷电伤害半径（cm） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|Damage", meta = (ClampMin = "1.0"))
-	float LightningRadius = 300.f;
-
-	/** 范围伤害量 */
+	/**
+	 * 单次判定的伤害量
+	 *
+	 * 每 EnemyDetectInterval 秒对 EnemyDetectRadius 内的每个敌人触发一次。
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|Damage", meta = (ClampMin = "0.0"))
 	float LightningDamage = 20.f;
 
-	/** 瞬移路径伤害量 */
+	/** 冲刺路径上敌人的伤害量 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|Damage", meta = (ClampMin = "0.0"))
 	float TeleportPathDamage = 40.f;
 
-	/** 路径伤害的检测半径（cm） */
+	/** 冲刺路径的伤害判定半径（cm） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|Damage", meta = (ClampMin = "1.0"))
 	float TeleportPathRadius = 120.f;
 
-	// ---------- 冲刺参数 ----------
-
 	/**
-	 * 冲刺的碰撞检测半径（cm）
+	 * 冲刺扫掠使用的碰撞半径（cm）
 	 *
-	 * 用胶囊沿冲刺方向做扫掠，遇到墙就把目标点截断在墙前，
-	 * 保证不会冲到墙里或冲出地图。
+	 * 仅在无法取得玩家胶囊组件时作为兜底值。
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|Dash", meta = (ClampMin = "10.0"))
 	float DashProbeRadius = 40.f;
 
-	// ---------- 命中特效（在蓝图里调） ----------
+	// ---------- 命中特效 ----------
 
 	/**
-	 * 命中特效的雷电特效
+	 * 命中敌人时使用的特效
 	 *
-	 * 默认 NS_EnemyHit_Lightning（从 NS_Lightning_01a 复制并调整过：
-	 * SpawnRate 1→50、粒子寿命 1~1.5s→0.2~0.5s，所以能立即出现）。
+	 * 默认 NS_EnemyHit_Lightning（由 NS_Lightning_01a 复制并调过参数：
+	 * 粒子生成速率 1→50、粒子寿命 1~1.5s→0.2~0.5s，因此挂上即出粒子）。
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
 	TObjectPtr<UNiagaraSystem> EnemyHitFX;
 
-	/** 命中特效大小 X 轴（1.0 = 原始大小） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
-	float EnemyHitFXScaleX = 1.5f;
-
-	/** 命中特效大小 Y 轴 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
-	float EnemyHitFXScaleY = 1.5f;
-
-	/** 命中特效大小 Z 轴 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
-	float EnemyHitFXScaleZ = 1.5f;
-
-	/** 三个轴使用同一个缩放值（勾选后忽略 XYZ 分轴设置） */
+	/** 命中特效是否三轴等比缩放（关闭后使用下面的 XYZ 分轴值） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
 	bool bEnemyHitFXUniformScale = true;
 
-	/** 统一缩放值（仅在 bEnemyHitFXUniformScale 为 true 时生效） */
+	/** 命中特效等比缩放值（1.0 = 原始大小） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
 	float EnemyHitFXScale = 1.5f;
 
-	/** 命中特效持续时间（秒），到时强制销毁 */
+	/** 命中特效 X 轴缩放（仅在关闭等比缩放时生效） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
+	float EnemyHitFXScaleX = 1.5f;
+
+	/** 命中特效 Y 轴缩放（仅在关闭等比缩放时生效） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
+	float EnemyHitFXScaleY = 1.5f;
+
+	/** 命中特效 Z 轴缩放（仅在关闭等比缩放时生效） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.01"))
+	float EnemyHitFXScaleZ = 1.5f;
+
+	/** 命中特效持续时长（秒），到时自动销毁 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.05", Units = "s"))
 	float EnemyHitFXDuration = 0.5f;
 
-	/** 命中特效 Pitch（俯仰角，绕 Y 轴），度 */
+	/** 命中特效俯仰角（绕 Y 轴），度 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (Units = "deg"))
 	float EnemyHitFXPitch = 0.f;
 
-	/** 命中特效 Yaw（水平偏航角，绕 Z 轴），度 */
+	/** 命中特效偏航角（绕 Z 轴），度 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (Units = "deg"))
 	float EnemyHitFXYaw = 90.f;
 
-	/** 命中特效 Roll（翻滚角，绕 X 轴），度 */
+	/** 命中特效翻滚角（绕 X 轴），度 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (Units = "deg"))
 	float EnemyHitFXRoll = 0.f;
 
-	/** 命中特效相对敌人胶囊的位置偏移（Z 为向上），cm */
+	/** 命中特效相对敌人身体中心的位置偏移（Z 向上），cm */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
-	FVector EnemyHitFXOffset = FVector(0.f, 0.f, 0.f);
+	FVector EnemyHitFXOffset = FVector::ZeroVector;
 
-	/** 命中特效是否自动根据胶囊高度抬高位置 */
+	/** 是否按敌人胶囊高度自动上抬特效，避免埋进模型或地面 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
 	bool bEnemyHitFXAutoHeight = true;
 
-	/**
-	 * 命中特效的粒子生成速率
-	 *
-	 * 原特效 NS_Lightning_01a 默认每秒只生成 1 个粒子，
-	 * 看起来像没出现。调大这个值（如 20）能明显增强可见度。
-	 * 设为 0 则不改动原值。
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit", meta = (ClampMin = "0.0"))
-	float EnemyHitFXSpawnRate = 0.f;
+	// ---------- 飞行与路径特效 ----------
 
-	/** 命中特效的粒子尺寸（会覆盖原特效的 Mesh Scale） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
-	bool bOverrideEnemyHitFXScale3D = false;
-
-	/** 覆盖用的 Mesh Scale 值（仅在 bOverrideEnemyHitFXScale3D 为 true 时生效） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|EnemyHit")
-	FVector EnemyHitFXMeshScale = FVector(3.f, 3.f, 2.f);
-
-	// ---------- 飞行/路径特效 ----------
-
-	/** 飞行期间跟随方块的光环特效（默认 NS_Absorption_Yellow） */
+	/** 飞行期间跟随方块的光环特效 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|Flight")
 	TObjectPtr<UNiagaraSystem> FlightAuraFX;
 
-	/** 瞬移路径闪电特效（默认 NS_Lightning_01b） */
+	/** 冲刺路径闪电特效 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|Flight")
 	TObjectPtr<UNiagaraSystem> TeleportPathFX;
 
-	/** 路径闪电特效持续时间（秒），到时销毁 */
+	/** 冲刺路径闪电的持续时长（秒），到时自动销毁 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CS|LightningCube|FX|Flight", meta = (ClampMin = "0.05", Units = "s"))
 	float TeleportPathFXDuration = 2.f;
 
-	/** 飞行期间的特效组件实例 */
+	/** 飞行光环的组件实例（由 BeginPlay 创建，EndPlay 清理） */
 	UPROPERTY()
 	TObjectPtr<UNiagaraComponent> FlightAuraComponent;
 
-	/** 是否已经释放过范围雷电（避免反复触发） */
-	bool bLightningDischarged = false;
-
-	/** 是否已经瞬移过（每次发射只能瞬移一次） */
+private:
+	/** 本次发射是否已经冲刺过（每颗方块只允许冲刺一次） */
 	bool bTeleportUsed = false;
 };
