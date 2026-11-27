@@ -22,7 +22,8 @@ public class Cube_Skill : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"UMG",
-			"Niagara"
+			"Niagara",
+			"EngineCameras"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
